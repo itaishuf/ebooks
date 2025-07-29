@@ -1,0 +1,5 @@
+aiohttp==3.8.1
+fastapi==0.116.1
+Requests==2.32.4
+selenium==4.34.2
+uvicorn==0.18.2

@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import smtplib
-import sys
 import winreg
 from datetime import datetime
 from email.message import EmailMessage
@@ -16,7 +15,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 
 logger = logging.getLogger()
-logging.basicConfig(filename="D:\documents\RandomScripts\ebookarr\log",
+logging.basicConfig(filename="log",
                     format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 
@@ -63,7 +62,7 @@ def get_libgen_link(isbn, libgen_mirror):
 
 def send_to_kindle(book_path, email):
     msg = EmailMessage()
-    msg['From'] = 'itaishuf@gmail.com'
+    msg['From'] = os.getenv('GMAIL_ACCOUNT')
     msg['To'] = email
     msg['Subject'] = 'book'
 
@@ -75,7 +74,7 @@ def send_to_kindle(book_path, email):
                        filename=file_name)
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login('itaishuf@gmail.com', os.getenv('GMAIL_PASSWORD'))
+        smtp.login(os.getenv('GMAIL_ACCOUNT'), os.getenv('GMAIL_PASSWORD'))
         smtp.send_message(msg)
 
     os.remove(book_path)
