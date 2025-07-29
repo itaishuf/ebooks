@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -8,6 +9,7 @@ from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
+import aiohttp
 import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -33,36 +35,37 @@ def get_isbn(url):
     return text
 
 
-def get_libgen_link(isbn):
+async def choose_libgen_mirror():
+    mirrors = ["https://libgen.is", "https://libgen.st", "https://libgen.bz", "https://libgen.gs", "https://libgen.la", "https://libgen.gl", "https://libgen.li", "https://libgen.rs"]
+    status = await check_urls(mirrors)
+    mirrors = [stat for stat in status if stat]
+    if len(mirrors) == 0:
+        raise Exception('no active libgern mirror found')
+    return mirrors[0]
+
+
+async def is_url_running(session, url):
+    try:
+        async with session.get(url, timeout=5) as response:
+            return url
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+
+
+async def check_urls(urls):
+    async with aiohttp.ClientSession() as session:
+        tasks = [is_url_running(session, url) for url in urls]
+        return await asyncio.gather(*tasks)
+
+
+def get_libgen_link(isbn, libgen_mirror):
     query = f'https://annas-archive.org/search?q={isbn}&ext=epub'
     logger.debug(query)
     response = requests.get(query)
     text = response.text
     md5 = re.search('href...md5.([0-9a-f]+)', text).groups()[0]
-    link = f'https://libgen.bz/get.php?md5={md5}'
+    link = f'{libgen_mirror}/get.php?md5={md5}'
     return link
-
-
-def download_book(url):
-    logger.debug(url)
-    response = requests.get(url)
-    text = response.text
-    href = re.search('get.php.md5=.+?>', text).group()
-    url = f'https://libgen.bz/{href}'
-
-    logger.debug(url)
-    ad_page = response.text
-
-    href = re.search('get.php.md5=.+?>', ad_page).group()
-    url = f'https://libgen.bz/{href}'
-    logger.debug(url)
-
-    response = requests.get(url)
-    book = response.content
-    logger.debug(book[0:20])
-    with open('book.epub', 'wb') as f:
-        f.write(book)
-    return 'book.epub'
 
 
 def send_to_kindle(book_path, email):
@@ -116,12 +119,13 @@ def find_newest_file_in_downloads():
         return f"Error processing directory '{downloads_dir}': {e}"
 
 
-def main():
+async def main():
+    libgen_mirror = await choose_libgen_mirror()
     url, email = get_goodreads_link()
     isbn = get_isbn(url)
-    url = get_libgen_link(isbn)
+    url = get_libgen_link(isbn, libgen_mirror)
     book_path = download_book_using_selenium(url)
     send_to_kindle(book_path, email)
 
 
-main()
+asyncio.run(main())
