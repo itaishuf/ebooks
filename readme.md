@@ -15,6 +15,7 @@ ios shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 3. `setx GMAIL_PASSWORD "abcd abcd abcd abcd"`
 4. Save your Google account also to an environment variable
 5. `setx GMAIL_ACCOUNT "name@gmail.com"`
+6. :warning: **make sure to run those commands with admin privileges** :warning:
 
 ### Server
 1. Install Python 3.10 or later 
