@@ -20,13 +20,6 @@ logging.basicConfig(filename="D:\documents\RandomScripts\ebookarr\log",
                     format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 
-def get_goodreads_link():
-    link = sys.argv[1]
-    email = sys.argv[2]
-    logger.debug(link)
-    return link, email
-
-
 def get_isbn(url):
     logger.debug(url)
     response = requests.get(url)
@@ -82,7 +75,7 @@ def send_to_kindle(book_path, email):
                        filename=file_name)
 
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login('itaishuf@gmail.com', os.getenv('GMAIL_API_PASSWORD'))
+        smtp.login('itaishuf@gmail.com', os.getenv('GMAIL_PASSWORD'))
         smtp.send_message(msg)
 
     os.remove(book_path)
@@ -98,7 +91,6 @@ def download_book_using_selenium(url):
     driver.close()
     book_path = find_newest_file_in_downloads()
     return book_path
-
 
 
 def find_newest_file_in_downloads():
@@ -119,13 +111,10 @@ def find_newest_file_in_downloads():
         return f"Error processing directory '{downloads_dir}': {e}"
 
 
-async def main():
+async def ebook_download(goodreads_url, kindle_mail):
     libgen_mirror = await choose_libgen_mirror()
-    url, email = get_goodreads_link()
-    isbn = get_isbn(url)
+    isbn = get_isbn(goodreads_url)
     url = get_libgen_link(isbn, libgen_mirror)
     book_path = download_book_using_selenium(url)
-    send_to_kindle(book_path, email)
+    send_to_kindle(book_path, kindle_mail)
 
-
-asyncio.run(main())
