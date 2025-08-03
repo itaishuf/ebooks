@@ -6,9 +6,9 @@ if os.path.exists('requirements.txt'):
     subprocess.check_call(
         [sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
 
-script_path = os.path.abspath('ebook_service.pyw')
+script_path = os.path.abspath('service.pyw')
 python_executable = sys.executable.replace('python', 'pythonw')
-task_name = 'RunPythonServiceAtStartup'
+task_name = 'RunEbookDownloaderAtStartup'
 vbs_filename = os.path.join(os.environ['APPDATA'],
                             'Microsoft\\Windows\\Start Menu\\Programs\\Startup',
                             f'{task_name}.vbs')
