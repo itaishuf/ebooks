@@ -8,7 +8,7 @@ if os.path.exists('requirements.txt'):
         [sys.executable, '-m', 'pip', 'install', '-r', 'requirements.txt'])
 
 script_path = os.path.abspath('service.pyw')
-python_executable = sys.executable#.replace('python', 'pythonw')
+python_executable = sys.executable.replace('python', 'pythonw')
 task_name = 'RunEbookDownloaderAtStartup'
 vbs_filename = os.path.join(os.environ['APPDATA'],
                             'Microsoft\\Windows\\Start Menu\\Programs\\Startup',
