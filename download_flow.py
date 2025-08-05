@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import pathlib
 import re
 import smtplib
 import winreg
@@ -15,7 +16,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 
 logger = logging.getLogger()
-logging.basicConfig(filename="log",
+log_path = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\server.log').absolute()
+logging.basicConfig(filename=str(log_path),
                     format='%(asctime)s %(message)s', level=logging.DEBUG)
 
 
