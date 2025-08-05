@@ -4,6 +4,7 @@ import os
 import pathlib
 import re
 import smtplib
+import sys
 import winreg
 from datetime import datetime
 from email.message import EmailMessage
@@ -15,10 +16,12 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 
-logger = logging.getLogger()
-log_path = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\server.log').absolute()
-logging.basicConfig(filename=str(log_path),
-                    format='%(asctime)s %(message)s', level=logging.DEBUG)
+
+# redirect console output so script will run with pythonw
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
+
+logger = logging.getLogger(__name__)
 
 
 def get_isbn(url):
@@ -84,7 +87,7 @@ def send_to_kindle(book_path, email):
 
 def download_book_using_selenium(url):
     options = Options()
-    options.add_argument("--headless")
+    # options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
     driver.get(url)
     elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
@@ -106,16 +109,21 @@ def find_newest_file_in_downloads():
         last_modified = datetime.fromtimestamp(
             os.path.getmtime(newest_file)).strftime('%Y-%m-%d %H:%M:%S')
 
-        logger.debug({"file name": newest_file.name, "time": last_modified})
+        logger.info({"file name": newest_file.name, "time": last_modified})
         return newest_file.absolute()
     except Exception as e:
         return f"Error processing directory '{downloads_dir}': {e}"
 
 
 async def ebook_download(goodreads_url, kindle_mail):
+    logger.info(f'arguments: {goodreads_url}, {kindle_mail}')
     libgen_mirror = await choose_libgen_mirror()
+    logger.info(f'function name: choose_libgen_mirror, return value:{libgen_mirror}')
     isbn = get_isbn(goodreads_url)
+    logger.info(f'function name: get_isbn, return value:{isbn}')
     url = get_libgen_link(isbn, libgen_mirror)
+    logger.info(f'function name: get_libgen_link, return value:{url}')
     book_path = download_book_using_selenium(url)
+    logger.info(f'"function name: download_book_using_selenium, return value:{book_path}')
     send_to_kindle(book_path, kindle_mail)
 
