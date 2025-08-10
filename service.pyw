@@ -13,7 +13,7 @@ sys.stdout = open(os.devnull, 'w')
 sys.stderr = open(os.devnull, 'w')
 #
 logger = logging.getLogger(__name__)
-log_path = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\test_books.log').absolute()
+log_path = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\books.log').absolute()
 logging.basicConfig(filename=str(log_path), level=logging.DEBUG,
                     format='%(asctime)s, [%(filename)s:%(lineno)s - %(funcName)s()], %(levelname)s, "%(message)s"')
 #

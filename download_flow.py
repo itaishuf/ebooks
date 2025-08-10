@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 def log_coroutine_call(func: callable):
-
     async def async_wrapper(*args, **kwargs):
         logger.info(f"function name:{func.__name__}, function arguments: {args}")
         start_time = time.perf_counter()
@@ -34,11 +33,11 @@ def log_coroutine_call(func: callable):
         logger.info(
             f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
         return result
+
     return async_wrapper
 
 
 def log_function_call(func: callable):
-
     def sync_wrapper(*args, **kwargs):
         logger.info(f"function name:{func.__name__}, function arguments: {args}")
         start_time = time.perf_counter()
@@ -47,6 +46,7 @@ def log_function_call(func: callable):
         logger.info(
             f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
         return result
+
     return sync_wrapper
 
 
@@ -58,7 +58,7 @@ def get_isbn(url: str) -> str:
         text = re.search(r'isbn...(\d+)', text).groups()[0]
         return text
     except requests.exceptions.MissingSchema:
-        raise ConnectionRefusedError('goodreads URL isnt valid')
+        raise ConnectionRefusedError("Goodreads URL isn't valid")
 
 
 @log_coroutine_call
@@ -66,43 +66,59 @@ async def choose_libgen_mirror() -> str:
     mirrors = ["https://libgen.is", "https://libgen.st", "https://libgen.bz",
                "https://libgen.gs", "https://libgen.la", "https://libgen.gl",
                "https://libgen.li", "https://libgen.rs"]
-    status = await check_libgen_mirrors(mirrors)
+    status = await gather_page_status(mirrors)
     mirrors = [stat for stat in status if stat]
     if len(mirrors) == 0:
         raise ConnectionError('No active libgen mirror found')
     return mirrors[0]
 
 
-async def check_mirror_status(session, url: str):
+async def check_page_status(session, url: str):
     """
     i didnt add logging for this function since it isnt needed for debugging.
-    check_libgen_mirrors is enough
+    gather_page_status is enough
     """
     try:
-        async with session.get(url, timeout=5):
-            return url
+        async with session.get(url, timeout=5) as response:
+            if response.status == 200:
+                return url
+            else:
+                return None
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return None
 
 
 @log_coroutine_call
-async def check_libgen_mirrors(urls: list[str]):
+async def gather_page_status(urls: list[str]):
     async with aiohttp.ClientSession() as session:
-        tasks = [check_mirror_status(session, url) for url in urls]
+        tasks = [check_page_status(session, url) for url in urls]
         return await asyncio.gather(*tasks)
 
 
-@log_function_call
-def get_libgen_link(isbn, libgen_mirror) -> str:
+@log_coroutine_call
+async def get_libgen_link(isbn, libgen_mirror) -> str:
     query = f'https://annas-archive.org/search?q={isbn}&ext=epub&lang=en&lang=he'
     response = requests.get(query)
     text = response.text
-    md5 = re.search('href...md5.([0-9a-f]+)', text).groups()[0]
-    # TODO: change this function to get all md5 from the page not just the first one
-    link = f'{libgen_mirror}/get.php?md5={md5}'
-    # TODO: check if the links exist before passing it on
-    # TODO: choose the best link freom the list, check for languege, author and title
-    return link
+    hashes = re.findall('href...md5.([0-9a-f]+)', text)
+    links = [f'{libgen_mirror}/get.php?md5={md5}' for md5 in hashes]
+
+    # filter out matches with no valid download on libgen
+    status = await gather_page_status(links)
+    active_links = [stat for stat in status if stat]
+
+    # gather metadata on each result from annas archive
+    pages = [requests.get(link).text for link in active_links]
+    matches = [{'Title': re.findall(r'<td>Title: ([\w: ]+?)<br>', page)[0],
+                'Author': re.findall(r'Author\(s\): (.+?)<br>', page)[0],
+                'ISBN': re.findall(r'ISBN: ([\d ;]+?)<br>', page)[0]} for page in
+               pages]
+    # filter out matches with the wrong ISBN
+    matches = [isbn in match['ISBN'] for match in matches]
+    correct_active_links = [link for link, match in zip(active_links, matches) if
+                            match]
+
+    return correct_active_links[0]
 
 
 @log_function_call
@@ -119,10 +135,12 @@ def send_to_kindle(book_path: Path, email: str):
         logger.info(f"file size: {round(len(file_data) / 1000, 1)}KB")
     msg.add_attachment(file_data, maintype='application', subtype='octet-stream',
                        filename=file_name)
-
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(os.getenv('GMAIL_ACCOUNT'), os.getenv('GMAIL_PASSWORD'))
-        smtp.send_message(msg)
+    try:
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+            smtp.login(os.getenv('GMAIL_ACCOUNT'), os.getenv('GMAIL_PASSWORD'))
+            smtp.send_message(msg)
+    except smtplib.SMTPException:
+        raise ConnectionRefusedError("Kindle mail isn't valid")
 
     os.remove(book_path)
 
@@ -136,6 +154,7 @@ def download_book_using_selenium(url: str) -> Path:
         driver.get(url)
         elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
         elem.click()
+        time.sleep(2)
         driver.close()
         book_path = find_newest_file_in_downloads()
         return book_path
@@ -159,13 +178,13 @@ def find_newest_file_in_downloads() -> Path:
 
         logger.info({"file name": newest_file.name, "time": last_modified})
         return newest_file.absolute()
-    except Exception as e:
+    except Exception:
         raise FileNotFoundError("Error locating the file downloaded with Selenium")
 
 
 async def ebook_download(goodreads_url, kindle_mail):
     libgen_mirror = await choose_libgen_mirror()
     isbn = get_isbn(goodreads_url)
-    url = get_libgen_link(isbn, libgen_mirror)
+    url = await get_libgen_link(isbn, libgen_mirror)
     book_path = download_book_using_selenium(url)
     send_to_kindle(book_path, kindle_mail)
