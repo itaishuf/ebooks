@@ -98,7 +98,10 @@ def get_libgen_link(isbn, libgen_mirror) -> str:
     response = requests.get(query)
     text = response.text
     md5 = re.search('href...md5.([0-9a-f]+)', text).groups()[0]
+    # TODO: change this function to get all md5 from the page not just the first one
     link = f'{libgen_mirror}/get.php?md5={md5}'
+    # TODO: check if the links exist before passing it on
+    # TODO: choose the best link freom the list, check for languege, author and title
     return link
 
 
@@ -139,7 +142,6 @@ def download_book_using_selenium(url: str) -> Path:
     except selenium.common.NoSuchElementException:
         driver.close()
         raise RuntimeError('Failed to find book in libgen')
-        # TODO: add capability to check all (non partial) results found in anna
 
 
 @log_function_call

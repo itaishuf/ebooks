@@ -34,4 +34,4 @@ async def handler(goodreads_url: str, kindle_mail: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=19193)
+    uvicorn.run(app, host="0.0.0.0", port=19191)
