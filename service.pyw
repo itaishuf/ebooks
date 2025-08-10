@@ -27,10 +27,11 @@ async def handler(goodreads_url: str, kindle_mail: str):
         await ebook_download(goodreads_url, kindle_mail)
         return "success, check your inbox for confirmation"
     except Exception as e:
+        logger.error(e)
         raise HTTPException(status_code=400,
                             detail=f"Error processing data: {goodreads_url}, {kindle_mail}")
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=19192)
+    uvicorn.run(app, host="0.0.0.0", port=19193)

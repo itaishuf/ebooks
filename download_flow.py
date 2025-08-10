@@ -1,5 +1,4 @@
 import asyncio
-import functools
 import logging
 import os
 import re
@@ -13,6 +12,7 @@ from pathlib import Path
 
 import aiohttp
 import requests
+import selenium.common
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
@@ -24,22 +24,8 @@ sys.stderr = open(os.devnull, 'w')
 logger = logging.getLogger(__name__)
 
 
-def log_coroutine_call(func):
-    @functools.wraps(func)
-    def sync_wrapper(*args, **kwargs):
-        logger.info(f"function name:{func.__name__}, function arguments: {args}")
-        start_time = time.perf_counter()
-        result = func(*args, **kwargs)
-        end_time = time.perf_counter()
-        logger.info(
-            f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
-        return result
+def log_coroutine_call(func: callable):
 
-
-def log_function_call(func):
-    """Logs the execution time for both async and sync functions."""
-
-    @functools.wraps(func)
     async def async_wrapper(*args, **kwargs):
         logger.info(f"function name:{func.__name__}, function arguments: {args}")
         start_time = time.perf_counter()
@@ -48,18 +34,35 @@ def log_function_call(func):
         logger.info(
             f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
         return result
+    return async_wrapper
+
+
+def log_function_call(func: callable):
+
+    def sync_wrapper(*args, **kwargs):
+        logger.info(f"function name:{func.__name__}, function arguments: {args}")
+        start_time = time.perf_counter()
+        result = func(*args, **kwargs)
+        end_time = time.perf_counter()
+        logger.info(
+            f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
+        return result
+    return sync_wrapper
 
 
 @log_function_call
-def get_isbn(url):
-    response = requests.get(url)
-    text = response.text
-    text = re.search(r'isbn...(\d+)', text).groups()[0]
-    return text
+def get_isbn(url: str) -> str:
+    try:
+        response = requests.get(url)
+        text = response.text
+        text = re.search(r'isbn...(\d+)', text).groups()[0]
+        return text
+    except requests.exceptions.MissingSchema:
+        raise ConnectionRefusedError('goodreads URL isnt valid')
 
 
 @log_coroutine_call
-async def choose_libgen_mirror():
+async def choose_libgen_mirror() -> str:
     mirrors = ["https://libgen.is", "https://libgen.st", "https://libgen.bz",
                "https://libgen.gs", "https://libgen.la", "https://libgen.gl",
                "https://libgen.li", "https://libgen.rs"]
@@ -70,8 +73,11 @@ async def choose_libgen_mirror():
     return mirrors[0]
 
 
-@log_coroutine_call
-async def check_mirror_status(session, url):
+async def check_mirror_status(session, url: str):
+    """
+    i didnt add logging for this function since it isnt needed for debugging.
+    check_libgen_mirrors is enough
+    """
     try:
         async with session.get(url, timeout=5):
             return url
@@ -80,15 +86,15 @@ async def check_mirror_status(session, url):
 
 
 @log_coroutine_call
-async def check_libgen_mirrors(urls):
+async def check_libgen_mirrors(urls: list[str]):
     async with aiohttp.ClientSession() as session:
         tasks = [check_mirror_status(session, url) for url in urls]
         return await asyncio.gather(*tasks)
 
 
 @log_function_call
-def get_libgen_link(isbn, libgen_mirror):
-    query = f'https://annas-archive.org/search?q={isbn}&ext=epub'
+def get_libgen_link(isbn, libgen_mirror) -> str:
+    query = f'https://annas-archive.org/search?q={isbn}&ext=epub&lang=en&lang=he'
     response = requests.get(query)
     text = response.text
     md5 = re.search('href...md5.([0-9a-f]+)', text).groups()[0]
@@ -97,7 +103,7 @@ def get_libgen_link(isbn, libgen_mirror):
 
 
 @log_function_call
-def send_to_kindle(book_path, email):
+def send_to_kindle(book_path: Path, email: str):
     msg = EmailMessage()
     msg['From'] = os.getenv('GMAIL_ACCOUNT')
     msg['To'] = email
@@ -119,20 +125,25 @@ def send_to_kindle(book_path, email):
 
 
 @log_function_call
-def download_book_using_selenium(url):
+def download_book_using_selenium(url: str) -> Path:
     options = Options()
     # options.add_argument("--headless")
     driver = webdriver.Firefox(options=options)
-    driver.get(url)
-    elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
-    elem.click()
-    driver.close()
-    book_path = find_newest_file_in_downloads()
-    return book_path
+    try:
+        driver.get(url)
+        elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
+        elem.click()
+        driver.close()
+        book_path = find_newest_file_in_downloads()
+        return book_path
+    except selenium.common.NoSuchElementException:
+        driver.close()
+        raise RuntimeError('Failed to find book in libgen')
+        # TODO: add capability to check all (non partial) results found in anna
 
 
 @log_function_call
-def find_newest_file_in_downloads():
+def find_newest_file_in_downloads() -> Path:
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                         r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as key:
         downloads_dir = Path(os.path.expandvars(
