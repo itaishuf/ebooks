@@ -154,9 +154,12 @@ def download_book_using_selenium(url: str) -> Path:
         driver.get(url)
         elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
         elem.click()
-        time.sleep(2)
-        driver.close()
         book_path = find_newest_file_in_downloads()
+        while book_path.suffix == 'part':
+            time.sleep(0.5)
+            book_path = find_newest_file_in_downloads()
+        time.sleep(0.5)
+        driver.close()
         return book_path
     except selenium.common.NoSuchElementException:
         driver.close()
