@@ -24,7 +24,7 @@ sys.stderr = open(os.devnull, 'w')
 logger = logging.getLogger(__name__)
 
 
-def log_coroutine_call(func: callable):
+def log_coroutine_call(func):
     async def async_wrapper(*args, **kwargs):
         logger.info(f"function name:{func.__name__}, function arguments: {args}")
         start_time = time.perf_counter()
@@ -37,7 +37,7 @@ def log_coroutine_call(func: callable):
     return async_wrapper
 
 
-def log_function_call(func: callable):
+def log_function_call(func):
     def sync_wrapper(*args, **kwargs):
         logger.info(f"function name:{func.__name__}, function arguments: {args}")
         start_time = time.perf_counter()
