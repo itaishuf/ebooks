@@ -1,15 +1,21 @@
 import asyncio
-import asyncio
 import re
 import time
 from pathlib import Path
-
 import aiohttp
 import requests
 import selenium.common
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    NoSuchElementException,
+    NoAlertPresentException,
+    WebDriverException,
+)
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 from utils import log_function_call, log_coroutine_call, \
     find_newest_file_in_downloads
@@ -47,12 +53,16 @@ async def get_libgen_link(isbn, libgen_mirror) -> str:
 
     # gather metadata on each result from annas archive
     pages = [requests.get(link).text for link in active_links]
-    matches = [{'Title': re.findall(r'<td>Title: ([\w: ]+?)<br>', page)[0],
-                'Author': re.findall(r'Author\(s\): (.+?)<br>', page)[0],
-                'ISBN': re.findall(r'ISBN: ([\d ;]+?)<br>', page)[0]} for page in
+    matches = [{'Title': re.findall(r'<td>Title: ([\w: ]+?)<br>', page),
+                'Author': re.findall(r'Author\(s\): (.+?)<br>', page),
+                'ISBN': re.findall(r'ISBN: ([\d ;]+?)<br>', page)} for page in
                pages]
+    # add filler for matches with no ISBN
+    for match in matches:
+        if not match['ISBN']:
+            match['ISBN'] = ['*']
     # filter out matches with the wrong ISBN
-    matches = [isbn in match['ISBN'] for match in matches]
+    matches = [isbn in match['ISBN'][0] for match in matches]
     correct_active_links = [link for link, match in zip(active_links, matches) if
                             match]
 
@@ -66,8 +76,60 @@ def download_book_using_selenium(url: str) -> Path:
     driver = webdriver.Firefox(options=options)
     try:
         driver.get(url)
-        elem = driver.find_element(By.XPATH, "/html/body/table/tbody/tr[1]/td[2]/a")
-        elem.click()
+        original_handle = driver.current_window_handle
+        wait = WebDriverWait(driver, 10)
+
+        xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
+
+        def close_popups_and_return():
+            # Dismiss alert if present
+            try:
+                alert = driver.switch_to.alert
+                alert.dismiss()
+            except NoAlertPresentException:
+                pass
+
+            # Close any newly opened tabs/windows (ads)
+            for handle in list(driver.window_handles):
+                if handle != original_handle:
+                    try:
+                        driver.switch_to.window(handle)
+                        driver.close()
+                    except Exception:
+                        pass
+            # Return to the original window
+            driver.switch_to.window(original_handle)
+
+        # Try clicking, handle intercepted clicks by closing ads and retrying
+        attempts = 3
+        for i in range(attempts):
+            try:
+                elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                elem.click()
+                break  # clicked successfully
+            except ElementClickInterceptedException:
+                close_popups_and_return()
+                # Small wait before retry
+                time.sleep(0.5)
+            except WebDriverException as e:
+                if "intercept" in str(e).lower():
+                    close_popups_and_return()
+                    time.sleep(0.5)
+                else:
+                    raise
+        else:
+            # As a last resort try JS click once
+            elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+            try:
+                driver.execute_script("arguments[0].click();", elem)
+            except Exception:
+                close_popups_and_return()
+                elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                driver.execute_script("arguments[0].click();", elem)
+
+        # After clicking, close any ad tabs that may have opened and return
+        close_popups_and_return()
+
         book_path = find_newest_file_in_downloads()
         while book_path.suffix == 'part':
             time.sleep(0.5)
@@ -75,7 +137,7 @@ def download_book_using_selenium(url: str) -> Path:
         time.sleep(0.5)
         driver.close()
         return book_path
-    except selenium.common.NoSuchElementException:
+    except NoSuchElementException:
         driver.close()
         raise RuntimeError('Failed to find book in libgen')
 

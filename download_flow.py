@@ -30,7 +30,6 @@ def get_isbn(url: str) -> str:
         raise ConnectionRefusedError("Goodreads URL isn't valid")
 
 
-
 @log_function_call
 def send_to_kindle(book_path: Path, email: str):
     msg = EmailMessage()
