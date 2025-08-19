@@ -1,12 +1,11 @@
-import os
 import logging
-import sys
+import os
 import pathlib
+import sys
 
 from fastapi import FastAPI, HTTPException
 
 from download_flow import ebook_download
-
 
 # redirect console output so script will run with pythonw
 sys.stdout = open(os.devnull, 'w')
