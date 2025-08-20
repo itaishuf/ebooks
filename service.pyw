@@ -8,8 +8,8 @@ from fastapi import FastAPI, HTTPException
 from download_flow import ebook_download
 
 
-PORT = 19193
-LOG_PATH = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\test_books.log').absolute()
+PORT = 19191
+LOG_PATH = pathlib.WindowsPath(rf'{os.getenv("APPDATA")}\ebookarr\books.log').absolute()
 
 
 # redirect console output so script will run with pythonw

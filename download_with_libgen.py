@@ -13,7 +13,6 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
 
 from utils import log_function_call, log_coroutine_call, \
     find_newest_file_in_downloads
@@ -73,10 +72,8 @@ def download_book_using_selenium(url: str) -> Path:
     try:
         driver.get(url)
         original_handle = driver.current_window_handle
-        wait = WebDriverWait(driver, 10)
 
         button_xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
-        ad_xpath = '[ @ id = "lky1s"]'
 
         # Try clicking, handle intercepted clicks by closing ads and retrying
         attempts = 3
@@ -86,7 +83,8 @@ def download_book_using_selenium(url: str) -> Path:
                 elem.click()
                 break
             except ElementClickInterceptedException:
-                click_and_close_the_popup(driver, original_handle)
+                driver.find_element(By.TAG_NAME, 'body').click()
+                driver.switch_to.window(original_handle)
 
         book_path = find_newest_file_in_downloads()
         while book_path.suffix == 'part':
@@ -98,14 +96,6 @@ def download_book_using_selenium(url: str) -> Path:
     except NoSuchElementException:
         driver.close()
         raise RuntimeError('Failed to find book in libgen')
-
-
-@log_function_call
-def click_and_close_the_popup(driver, original_handle):
-    # click somewhere on the screen
-    elem = driver.find_element(By.TAG_NAME, 'body')
-    elem.click()
-    driver.switch_to.window(original_handle)
 
 
 @log_coroutine_call
