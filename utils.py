@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def log_coroutine_call(func):
     async def async_wrapper(*args, **kwargs):
-        logger.info(f"function name:{func.__name__}, function arguments: {args}")
+        logger.info(f"function name:{func.__name__}, function arguments: {args}, function keyword arguments: {kwargs}")
         start_time = time.perf_counter()
         result = await func(*args, **kwargs)
         end_time = time.perf_counter()
@@ -23,7 +23,7 @@ def log_coroutine_call(func):
 
 def log_function_call(func):
     def sync_wrapper(*args, **kwargs):
-        logger.info(f"function name:{func.__name__}, function arguments: {args}")
+        logger.info(f"function name:{func.__name__}, function arguments: {args}, function keyword arguments: {kwargs}")
         start_time = time.perf_counter()
         result = func(*args, **kwargs)
         end_time = time.perf_counter()

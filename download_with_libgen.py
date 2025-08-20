@@ -10,11 +10,9 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
-    WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from utils import log_function_call, log_coroutine_call, \
@@ -42,12 +40,8 @@ async def choose_libgen_mirror() -> str:
 
 
 @log_coroutine_call
-async def get_libgen_link(isbn, libgen_mirror) -> str:
-    query = f'https://annas-archive.org/search?q={isbn}&ext=epub&lang=en&lang=he'
-    response = requests.get(query)
-    text = response.text
-    hashes = re.findall('href...md5.([0-9a-f]+)', text)
-    links = [f'{libgen_mirror}/get.php?md5={md5}' for md5 in hashes]
+async def get_libgen_link(isbn, book_md5_list, libgen_mirror) -> str:
+    links = [f'{libgen_mirror}/get.php?md5={md5}' for md5 in book_md5_list]
 
     # filter out matches with no valid download on libgen
     status = await gather_page_status(links)
