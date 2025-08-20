@@ -27,8 +27,17 @@ def log_function_call(func):
         start_time = time.perf_counter()
         result = func(*args, **kwargs)
         end_time = time.perf_counter()
-        logger.info(
-            f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
+        try:
+            length = len(result)
+            if length > 8192:
+                logger.info(
+                    f"function name:{func.__name__}, return value: {result[:8192]}, duration: {end_time - start_time:.4f}s")
+            else:
+                logger.info(
+                    f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
+        except TypeError:
+            logger.info(
+                f"function name:{func.__name__}, return value: {result}, duration: {end_time - start_time:.4f}s")
         return result
 
     return sync_wrapper
