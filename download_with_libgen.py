@@ -1,24 +1,26 @@
 import asyncio
+import logging
 import re
 import time
 from pathlib import Path
+
 import aiohttp
 import requests
-import selenium.common
 from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.firefox.options import Options
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
-    NoAlertPresentException,
     WebDriverException,
 )
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from utils import log_function_call, log_coroutine_call, \
     find_newest_file_in_downloads
+
+logger = logging.getLogger(__name__)
 
 
 @log_coroutine_call
@@ -79,56 +81,18 @@ def download_book_using_selenium(url: str) -> Path:
         original_handle = driver.current_window_handle
         wait = WebDriverWait(driver, 10)
 
-        xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
-
-        def close_popups_and_return():
-            # Dismiss alert if present
-            try:
-                alert = driver.switch_to.alert
-                alert.dismiss()
-            except NoAlertPresentException:
-                pass
-
-            # Close any newly opened tabs/windows (ads)
-            for handle in list(driver.window_handles):
-                if handle != original_handle:
-                    try:
-                        driver.switch_to.window(handle)
-                        driver.close()
-                    except Exception:
-                        pass
-            # Return to the original window
-            driver.switch_to.window(original_handle)
+        button_xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
+        ad_xpath = '[ @ id = "lky1s"]'
 
         # Try clicking, handle intercepted clicks by closing ads and retrying
         attempts = 3
         for i in range(attempts):
             try:
-                elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                elem = driver.find_element(By.XPATH, button_xpath)
                 elem.click()
-                break  # clicked successfully
+                break
             except ElementClickInterceptedException:
-                close_popups_and_return()
-                # Small wait before retry
-                time.sleep(0.5)
-            except WebDriverException as e:
-                if "intercept" in str(e).lower():
-                    close_popups_and_return()
-                    time.sleep(0.5)
-                else:
-                    raise
-        else:
-            # As a last resort try JS click once
-            elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-            try:
-                driver.execute_script("arguments[0].click();", elem)
-            except Exception:
-                close_popups_and_return()
-                elem = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                driver.execute_script("arguments[0].click();", elem)
-
-        # After clicking, close any ad tabs that may have opened and return
-        close_popups_and_return()
+                click_and_close_the_popup(driver, original_handle)
 
         book_path = find_newest_file_in_downloads()
         while book_path.suffix == 'part':
@@ -140,6 +104,14 @@ def download_book_using_selenium(url: str) -> Path:
     except NoSuchElementException:
         driver.close()
         raise RuntimeError('Failed to find book in libgen')
+
+
+@log_function_call
+def click_and_close_the_popup(driver, original_handle):
+    # click somewhere on the screen
+    elem = driver.find_element(By.TAG_NAME, 'body')
+    elem.click()
+    driver.switch_to.window(original_handle)
 
 
 @log_coroutine_call

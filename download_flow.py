@@ -55,8 +55,9 @@ def send_to_kindle(book_path: Path, email: str):
 
 
 async def ebook_download(goodreads_url, kindle_mail):
-    libgen_mirror = await choose_libgen_mirror()
-    isbn = get_isbn(goodreads_url)
-    url = await get_libgen_link(isbn, libgen_mirror)
+    # libgen_mirror = await choose_libgen_mirror()
+    # isbn = get_isbn(goodreads_url)
+    # url = await get_libgen_link(isbn, libgen_mirror)
+    url = 'https://libgen.la/get.php?md5=584eaab7bcd4eddd760270deaff87c37'
     book_path = download_book_using_selenium(url)
     send_to_kindle(book_path, kindle_mail)
