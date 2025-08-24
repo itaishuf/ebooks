@@ -46,8 +46,16 @@ async def get_libgen_link(isbn, book_md5_list, libgen_mirror) -> str:
     status = await gather_page_status(links)
     active_links = [stat for stat in status if stat]
 
-    # gather metadata on each result from annas archive
-    pages = [requests.get(link).text for link in active_links]
+    # gather metadata on each result from annas archive (non-blocking)
+    async with aiohttp.ClientSession() as session:
+        async def fetch_text(url: str):
+            try:
+                async with session.get(url, timeout=8) as resp:
+                    return await resp.text()
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                return ""
+
+        pages = await asyncio.gather(*[fetch_text(link) for link in active_links])
     matches = [{'Title': re.findall(r'<td>Title: ([\w: ]+?)<br>', page),
                 'Author': re.findall(r'Author\(s\): (.+?)<br>', page),
                 'ISBN': re.findall(r'ISBN: ([\d ;]+?)<br>', page)} for page in

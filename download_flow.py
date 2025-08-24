@@ -3,7 +3,9 @@ import os
 import re
 import smtplib
 import sys
+import asyncio
 from email.message import EmailMessage
+from typing import Callable, Optional, Awaitable
 
 import requests
 
@@ -64,22 +66,55 @@ def get_book_md5(isbn):
     return hashes
 
 
-async def ebook_download(goodreads_url, kindle_mail):
-    isbn = get_isbn(goodreads_url)
-    book_md5_list = get_book_md5(isbn)
+async def ebook_download(
+    goodreads_url: str,
+    kindle_mail: str,
+    progress_cb: Optional[Callable[[int, str], Optional[Awaitable[None]]]] = None,
+):
+    def _set_progress(percent: int, message: str) -> None:
+        if not progress_cb:
+            return
+        try:
+            res = progress_cb(percent, message)
+            if asyncio.iscoroutine(res):
+                asyncio.create_task(res)  # fire and forget
+        except Exception:
+            # Ignore progress errors to not break main flow
+            pass
+
+    # Main flow with non-blocking thread offloading
+    _set_progress(5, "Fetching ISBN")
+    isbn = await asyncio.to_thread(get_isbn, goodreads_url)
+
+    _set_progress(20, "Searching sources")
+    book_md5_list = await asyncio.to_thread(get_book_md5, isbn)
+
     try:
+        _set_progress(40, "Choosing mirror")
         libgen_mirror = await choose_libgen_mirror()
+
+        _set_progress(60, "Getting download link")
         url = await get_libgen_link(isbn, book_md5_list, libgen_mirror)
-        book_path = download_book_using_selenium(url)
-        send_to_kindle(kindle_mail, book_path=book_path)
+
+        _set_progress(85, "Downloading")
+        book_path = await asyncio.to_thread(download_book_using_selenium, url)
+
+        _set_progress(95, "Sending to Kindle")
+        await asyncio.to_thread(send_to_kindle, kindle_mail, book_path=book_path)
+
+        _set_progress(100, "Done")
     except ConnectionError:
         """
         if there is a connection error, that means libgen is down.
         in that case we use annas archive api which costs money
         """
+        _set_progress(70, "Falling back to Anna's Archive")
         uri = f'/dyn/api/fast_download.json?md5={book_md5_list[0]}&key={os.getenv("ANNAS_ARCHIVE_API_KEY")}'
         domain = 'annas-archive.org'
-        response = requests.get(f'https://{domain}/{uri}')
+        response = await asyncio.to_thread(requests.get, f'https://{domain}/{uri}')
         download_url = response.json()['download_url']
-        file_data = requests.get(download_url).content
-        send_to_kindle(kindle_mail, book_data=file_data, filename=f'{book_md5_list[0]}.epub')
+        file_resp = await asyncio.to_thread(requests.get, download_url)
+        file_data = file_resp.content
+        _set_progress(95, "Sending to Kindle")
+        await asyncio.to_thread(send_to_kindle, kindle_mail, book_data=file_data, filename=f'{book_md5_list[0]}.epub')
+        _set_progress(100, "Done")
