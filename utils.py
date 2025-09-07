@@ -2,7 +2,7 @@ import logging
 import os
 import time
 import winreg
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -54,9 +54,12 @@ def find_newest_file_in_downloads() -> Path:
 
         newest_file = max(files, key=os.path.getmtime)
         last_modified = datetime.fromtimestamp(
-            os.path.getmtime(newest_file)).strftime('%Y-%m-%d %H:%M:%S')
+            os.path.getmtime(newest_file))
+        if datetime.now() - last_modified > timedelta(minutes=10):
+            raise FileNotFoundError()
+        last_modified = last_modified.strftime('%Y-%m-%d %H:%M:%S')
 
         logger.info({"file name": newest_file.name, "time": last_modified})
         return newest_file.absolute()
-    except Exception:
+    except Exception as e:
         raise FileNotFoundError("Error locating the file downloaded with Selenium")
