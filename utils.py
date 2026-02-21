@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import inspect
 import logging
 import os
 import time
@@ -40,7 +41,7 @@ def _truncated_result(result) -> str:
 
 def log_call(func: Callable) -> Callable:
     """Logging decorator that works for both sync and async functions."""
-    if asyncio.iscoroutinefunction(func):
+    if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
             safe_args, safe_kwargs = _redact_args(args, kwargs)

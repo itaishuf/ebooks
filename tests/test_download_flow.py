@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,7 +16,7 @@ async def test_get_isbn_valid_page():
     mock_response.__aexit__ = AsyncMock(return_value=False)
 
     mock_session = AsyncMock()
-    mock_session.get = AsyncMock(return_value=mock_response)
+    mock_session.get = MagicMock(return_value=mock_response)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -37,7 +37,7 @@ async def test_get_isbn_no_isbn_raises():
     mock_response.__aexit__ = AsyncMock(return_value=False)
 
     mock_session = AsyncMock()
-    mock_session.get = AsyncMock(return_value=mock_response)
+    mock_session.get = MagicMock(return_value=mock_response)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -60,7 +60,7 @@ async def test_get_book_md5_parses_hashes():
     mock_response.__aexit__ = AsyncMock(return_value=False)
 
     mock_session = AsyncMock()
-    mock_session.get = AsyncMock(return_value=mock_response)
+    mock_session.get = MagicMock(return_value=mock_response)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
