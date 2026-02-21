@@ -6,7 +6,8 @@ iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 
 ## Prerequisites
 
-- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Python 3.11+ (installed automatically by uv if missing)
 - Firefox (for Selenium)
 - [Bitwarden CLI](https://bitwarden.com/help/cli/) (`bw`) installed and in PATH
 
@@ -49,7 +50,13 @@ In your Google account, [create an App Password](https://myaccount.google.com/ap
 
 ```bash
 sudo apt update
-sudo apt install python3 python3-venv firefox-esr unzip
+sudo apt install firefox-esr unzip
+```
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Install the [Bitwarden CLI](https://bitwarden.com/help/cli/) binary:
@@ -66,7 +73,7 @@ Verify everything is installed:
 ```bash
 which bw          # should print /usr/local/bin/bw
 bw --version
-python3 --version
+uv --version
 ```
 
 #### 2. Create a dedicated service user
@@ -85,12 +92,13 @@ sudo cp -r . /opt/ebookarr/
 sudo chown -R ebookarr:ebookarr /opt/ebookarr
 ```
 
-#### 4. Create a virtual environment and install dependencies
+#### 4. Install dependencies
 
 ```bash
-sudo -u ebookarr python3 -m venv /opt/ebookarr/venv
-sudo -u ebookarr /opt/ebookarr/venv/bin/pip install -r /opt/ebookarr/requirements.txt
+sudo -u ebookarr uv sync --project /opt/ebookarr
 ```
+
+This creates a `.venv` inside `/opt/ebookarr` and installs all dependencies from `pyproject.toml`.
 
 #### 5. Configure the `.env` file
 
@@ -129,7 +137,7 @@ If the service fails to start, common causes are:
 - **Bitwarden CLI not found** — check the `PATH` in the service unit (step 6).
 - **Wrong file permissions** — the `ebookarr` user must own `/opt/ebookarr` and be able to read `.env`.
 - **Bitwarden login failure** — run `sudo -u ebookarr env $(cat /opt/ebookarr/.env | xargs) bw login --apikey` to test credentials interactively.
-- **Missing Python packages** — make sure you installed into the venv at `/opt/ebookarr/venv` (step 4).
+- **Missing Python packages** — make sure you ran `uv sync` in `/opt/ebookarr` (step 4).
 
 #### Running without systemd
 
@@ -137,8 +145,7 @@ If you just want to run the server directly for testing:
 
 ```bash
 cd /opt/ebookarr
-source venv/bin/activate
-python service.py
+uv run service.py
 ```
 
 ### Server (Docker)
@@ -174,7 +181,7 @@ Secrets (`GMAIL_PASSWORD`, `ANNAS_ARCHIVE_API_KEY`, `API_KEY`) are fetched from 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
-ruff check .
+uv sync --dev
+uv run pytest
+uv run ruff check .
 ```

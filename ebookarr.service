@@ -10,7 +10,7 @@ WorkingDirectory=/opt/ebookarr
 EnvironmentFile=/opt/ebookarr/.env
 # Bitwarden CLI must be in PATH for the ebookarr user
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
-ExecStart=/opt/ebookarr/venv/bin/python service.py
+ExecStart=/opt/ebookarr/.venv/bin/python service.py
 Restart=on-failure
 RestartSec=5
 
