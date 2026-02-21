@@ -1,0 +1,18 @@
+[Unit]
+Description=Ebookarr - Ebook Download Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ebookarr
+WorkingDirectory=/opt/ebookarr
+EnvironmentFile=/opt/ebookarr/.env
+# Bitwarden CLI must be in PATH for the ebookarr user
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/ebookarr/venv/bin/python service.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

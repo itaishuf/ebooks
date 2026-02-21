@@ -1,47 +1,64 @@
+import asyncio
 import logging
 import os
 import re
 import smtplib
-import sys
 from email.message import EmailMessage
+from pathlib import Path
 
-import requests
+import aiohttp
+from bs4 import BeautifulSoup
 
-from download_with_libgen import choose_libgen_mirror, get_libgen_link, \
-    download_book_using_selenium
-from utils import log_function_call
-
-# redirect console output so script will run with pythonw
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
+from config import settings
+from download_with_libgen import (
+    choose_libgen_mirror,
+    download_book_using_selenium,
+    get_libgen_link,
+)
+from exceptions import (
+    BookNotFoundError,
+    DownloadError,
+    EmailDeliveryError,
+    InvalidURLError,
+)
+from utils import log_call
 
 logger = logging.getLogger(__name__)
 
 
-@log_function_call
-def get_isbn(url: str) -> str:
+@log_call
+async def get_isbn(url: str) -> str:
     try:
-        response = requests.get(url)
-        text = response.text
-        text = re.search(r'isbn...(\d+)', text).groups()[0]
-        return text
-    except requests.exceptions.MissingSchema:
-        raise ConnectionRefusedError("Goodreads URL isn't valid")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                text = await response.text()
+    except aiohttp.InvalidUrlClientError:
+        raise InvalidURLError(f"Goodreads URL isn't valid: {url}")
+    soup = BeautifulSoup(text, 'html.parser')
+    isbn_tag = soup.find(string=re.compile(r'isbn', re.IGNORECASE))
+    if isbn_tag:
+        match = re.search(r'(\d{10,13})', str(isbn_tag))
+        if match:
+            return match.group(1)
+    # fallback: search entire page text
+    match = re.search(r'isbn...(\d+)', text)
+    if not match:
+        raise BookNotFoundError(f"No ISBN found on page: {url}")
+    return match.group(1)
 
 
-@log_function_call
-def send_to_kindle(email, book_path=None, book_data=b'', filename=''):
+@log_call
+def send_to_kindle(email: str, book_path: Path | None = None,
+                   book_data: bytes = b'', filename: str = ''):
     msg = EmailMessage()
-    msg['From'] = os.getenv('GMAIL_ACCOUNT')
+    msg['From'] = settings.gmail_account
     msg['To'] = email
     msg['Subject'] = 'book'
 
-    # Attach file
     if book_path:
         with open(book_path, 'rb') as f:
             file_data = f.read()
             file_name = f.name
-        os.remove(book_path)
     else:
         file_data = book_data
         file_name = filename
@@ -50,36 +67,53 @@ def send_to_kindle(email, book_path=None, book_data=b'', filename=''):
                        filename=file_name)
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(os.getenv('GMAIL_ACCOUNT'), os.getenv('GMAIL_PASSWORD'))
+            smtp.login(settings.gmail_account, settings.gmail_password)
             smtp.send_message(msg)
-    except smtplib.SMTPException:
-        raise ConnectionRefusedError("Kindle mail isn't valid")
+    except smtplib.SMTPException as e:
+        raise EmailDeliveryError(f"Failed to send email to {email}") from e
+    if book_path:
+        os.remove(book_path)
 
 
-def get_book_md5(isbn):
+@log_call
+async def get_book_md5(isbn: str) -> list[str]:
     query = f'https://annas-archive.org/search?q={isbn}&ext=epub&lang=en&lang=he'
-    response = requests.get(query)
-    text = response.text
-    hashes = re.findall('href...md5.([0-9a-f]+)', text)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(query) as response:
+            text = await response.text()
+    soup = BeautifulSoup(text, 'html.parser')
+    hashes = []
+    for a_tag in soup.find_all('a', href=re.compile(r'/md5/[0-9a-f]+')):
+        match = re.search(r'/md5/([0-9a-f]+)', a_tag['href'])
+        if match:
+            hashes.append(match.group(1))
     return hashes
 
 
-async def ebook_download(goodreads_url, kindle_mail):
-    isbn = get_isbn(goodreads_url)
-    book_md5_list = get_book_md5(isbn)
+async def ebook_download(goodreads_url: str, kindle_mail: str) -> None:
+    isbn = await get_isbn(goodreads_url)
+    book_md5_list = await get_book_md5(isbn)
+    if not book_md5_list:
+        raise BookNotFoundError(f"No book found for ISBN {isbn}")
     try:
         libgen_mirror = await choose_libgen_mirror()
         url = await get_libgen_link(isbn, book_md5_list, libgen_mirror)
-        book_path = download_book_using_selenium(url)
-        send_to_kindle(kindle_mail, book_path=book_path)
+        book_path = await asyncio.to_thread(download_book_using_selenium, url)
+        await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
     except ConnectionError:
-        """
-        if there is a connection error, that means libgen is down.
-        in that case we use annas archive api which costs money
-        """
-        uri = f'/dyn/api/fast_download.json?md5={book_md5_list[0]}&key={os.getenv("ANNAS_ARCHIVE_API_KEY")}'
+        # libgen is down, fall back to anna's archive paid API
+        if not settings.annas_archive_api_key:
+            raise DownloadError("LibGen is down and no Anna's Archive API key is configured")
+        uri = f'/dyn/api/fast_download.json?md5={book_md5_list[0]}&key={settings.annas_archive_api_key}'
         domain = 'annas-archive.org'
-        response = requests.get(f'https://{domain}/{uri}')
-        download_url = response.json()['download_url']
-        file_data = requests.get(download_url).content
-        send_to_kindle(kindle_mail, book_data=file_data, filename=f'{book_md5_list[0]}.epub')
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'https://{domain}/{uri}') as response:
+                data = await response.json()
+                download_url = data.get('download_url')
+                if not download_url:
+                    raise DownloadError("Anna's Archive API did not return a download URL")
+            async with session.get(download_url) as response:
+                file_data = await response.read()
+        await asyncio.to_thread(
+            send_to_kindle, kindle_mail, None, file_data, f'{book_md5_list[0]}.epub'
+        )
