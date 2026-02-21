@@ -45,27 +45,100 @@ In your Google account, [create an App Password](https://myaccount.google.com/ap
 
 ### Server (systemd)
 
+#### 1. Install system dependencies
+
 ```bash
-# Install Python 3.11+, Firefox, and the Bitwarden CLI
-sudo apt install python3 python3-venv firefox-esr
-sudo snap install bw
+sudo apt update
+sudo apt install python3 python3-venv firefox-esr unzip
+```
 
-# Create a venv and install dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+Install the [Bitwarden CLI](https://bitwarden.com/help/cli/) binary:
 
-# Edit .env with your Bitwarden credentials
-cp .env.example .env
-nano .env
+```bash
+curl -fLo /tmp/bw-linux.zip "https://vault.bitwarden.com/download/?app=cli&platform=linux"
+unzip -o /tmp/bw-linux.zip -d /tmp
+sudo install -m 755 /tmp/bw /usr/local/bin/bw
+rm /tmp/bw-linux.zip /tmp/bw
+```
 
-# Run directly
-python service.py
+Verify everything is installed:
 
-# Or install as a systemd service
-sudo cp ebookarr.service /etc/systemd/system/
+```bash
+which bw          # should print /usr/local/bin/bw
+bw --version
+python3 --version
+```
+
+#### 2. Create a dedicated service user
+
+The included `ebookarr.service` unit runs as a dedicated `ebookarr` user. Create it with no login shell and no home directory:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ebookarr
+```
+
+#### 3. Deploy the application to `/opt/ebookarr`
+
+```bash
+sudo mkdir -p /opt/ebookarr
+sudo cp -r . /opt/ebookarr/
+sudo chown -R ebookarr:ebookarr /opt/ebookarr
+```
+
+#### 4. Create a virtual environment and install dependencies
+
+```bash
+sudo -u ebookarr python3 -m venv /opt/ebookarr/venv
+sudo -u ebookarr /opt/ebookarr/venv/bin/pip install -r /opt/ebookarr/requirements.txt
+```
+
+#### 5. Configure the `.env` file
+
+```bash
+sudo cp /opt/ebookarr/.env.example /opt/ebookarr/.env
+sudo nano /opt/ebookarr/.env          # fill in your values
+sudo chown ebookarr:ebookarr /opt/ebookarr/.env
+sudo chmod 600 /opt/ebookarr/.env     # secrets — readable only by ebookarr
+```
+
+#### 6. Make sure the Bitwarden CLI is in the service's `PATH`
+
+The service unit sets `PATH` explicitly so systemd can find the `bw` binary. Open `ebookarr.service` and verify the `Environment="PATH=..."` line includes the directory from `which bw` (step 1). The default already includes `/usr/local/bin`, which is where the install command above places `bw`.
+
+```ini
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+```
+
+#### 7. Install and start the service
+
+```bash
+sudo cp /opt/ebookarr/ebookarr.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now ebookarr
+```
+
+#### 8. Verify it is running
+
+```bash
+sudo systemctl status ebookarr
+sudo journalctl -u ebookarr -f        # follow live logs
+```
+
+If the service fails to start, common causes are:
+
+- **Bitwarden CLI not found** — check the `PATH` in the service unit (step 6).
+- **Wrong file permissions** — the `ebookarr` user must own `/opt/ebookarr` and be able to read `.env`.
+- **Bitwarden login failure** — run `sudo -u ebookarr env $(cat /opt/ebookarr/.env | xargs) bw login --apikey` to test credentials interactively.
+- **Missing Python packages** — make sure you installed into the venv at `/opt/ebookarr/venv` (step 4).
+
+#### Running without systemd
+
+If you just want to run the server directly for testing:
+
+```bash
+cd /opt/ebookarr
+source venv/bin/activate
+python service.py
 ```
 
 ### Server (Docker)
