@@ -132,6 +132,14 @@ sudo systemctl status ebookarr
 sudo journalctl -u ebookarr -f        # follow live logs
 ```
 
+#### 9. Health check
+
+```bash
+curl http://localhost:19191/health     # → {"status":"ok"}
+```
+
+No API key required. Use this URL in your monitoring setup to confirm the service is up.
+
 If the service fails to start, common causes are:
 
 - **Bitwarden CLI not found** — check the `PATH` in the service unit (step 6).

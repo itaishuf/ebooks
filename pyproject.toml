@@ -4,13 +4,13 @@ version = "1.0.0"
 description = "FastAPI server that downloads ebooks from Goodreads URLs and sends them to Kindle"
 requires-python = ">=3.11"
 dependencies = [
-    "aiohttp>=3.9",
+    "aiohttp==3.12.15",
     "beautifulsoup4>=4.12",
     "email-validator>=2.0",
-    "fastapi>=0.110",
+    "fastapi==0.116.1",
     "pydantic-settings>=2.0",
-    "selenium>=4.15",
-    "uvicorn>=0.25",
+    "selenium==4.35.0",
+    "uvicorn==0.35.0",
 ]
 
 [project.optional-dependencies]

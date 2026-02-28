@@ -15,6 +15,9 @@ from exceptions import BitwardenError
 logger = logging.getLogger(__name__)
 
 
+_BW_TIMEOUT = 5  # seconds
+
+
 def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, **(extra_env or {})}
     try:
@@ -24,9 +27,12 @@ def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.C
             capture_output=True,
             text=True,
             check=True,
+            timeout=_BW_TIMEOUT,
         )
     except FileNotFoundError:
         raise BitwardenError("Bitwarden CLI ('bw') is not installed or not in PATH")
+    except subprocess.TimeoutExpired as exc:
+        raise BitwardenError(f"bw {' '.join(args[:2])} timed out after {_BW_TIMEOUT}s") from exc
     except subprocess.CalledProcessError as exc:
         raise BitwardenError(f"bw {' '.join(args[:2])} failed: {exc.stderr.strip()}") from exc
 
@@ -34,9 +40,18 @@ def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.C
 def bw_login() -> None:
     """Log in to Bitwarden using API key credentials from environment variables.
 
-    Expects BW_CLIENTID and BW_CLIENTSECRET to be set in the environment.
+    The .env file uses BW_CLIENT_ID / BW_CLIENT_SECRET, but the Bitwarden CLI
+    expects BW_CLIENTID / BW_CLIENTSECRET (no underscore). We bridge that here.
+    Logs out first to clear any stale session that would block API key login.
     """
-    _run_bw("login", "--apikey")
+    try:
+        _run_bw("logout")
+    except BitwardenError:
+        pass  # not logged in — that's fine
+    _run_bw("login", "--apikey", extra_env={
+        "BW_CLIENTID": os.environ.get("BW_CLIENT_ID", ""),
+        "BW_CLIENTSECRET": os.environ.get("BW_CLIENT_SECRET", ""),
+    })
 
 
 def bw_unlock() -> str:

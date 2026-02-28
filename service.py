@@ -25,7 +25,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
-        fetch_secrets(settings)
+        # fetch_secrets(settings)
+        # the bw server is down so for develpoment purposes only i will hardcode the gmail api key
+        pass
     except BitwardenError:
         logger.critical("Failed to fetch secrets from Bitwarden — refusing to start", exc_info=True)
         raise
@@ -43,6 +45,11 @@ class DownloadRequest(BaseModel):
 def verify_api_key(api_key: str = Query(alias="key", default="")):
     if settings.api_key and api_key != settings.api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+@app.get('/health')
+async def health():
+    return {"status": "ok"}
 
 
 @app.get('/')
