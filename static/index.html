@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ebookarr</title>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --surface: #1a1a1a;
+      --border: #2a2a2a;
+      --text: #e4e4e4;
+      --text-dim: #888;
+      --accent: #6c9eff;
+      --accent-dim: #4a7adb;
+      --error: #e05555;
+      --success: #4caf80;
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+
+    .app {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      text-align: center;
+      letter-spacing: -0.02em;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .field label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+
+    input[type="text"], input[type="email"] {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 0.75rem 1rem;
+      font-size: 1rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus { border-color: var(--accent); }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 0.75rem 1rem;
+      font-size: 1rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: var(--accent-dim); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .results {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .result-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.75rem 1rem;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .result-card:hover { border-color: var(--accent); }
+
+    .result-cover {
+      width: 36px;
+      height: 52px;
+      object-fit: cover;
+      border-radius: 4px;
+      flex-shrink: 0;
+      background: var(--border);
+    }
+
+    .result-info {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .result-title {
+      font-size: 0.95rem;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .result-meta {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 0.2rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .job-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+
+    .status-steps {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+    .step.active { color: var(--accent); font-weight: 500; }
+    .step.done { color: var(--success); }
+
+    .step-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
+    }
+    .step.active .step-dot { background: var(--accent); }
+    .step.done .step-dot { background: var(--success); }
+
+    .error-msg {
+      color: var(--error);
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .section-label {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+  </style>
+</head>
+<body>
+  <div class="app" x-data="ebookarr()">
+    <h1>Ebookarr</h1>
+
+    <div class="field">
+      <label for="query">Book name or Goodreads URL</label>
+      <input id="query" type="text" x-model="query" placeholder="The Great Gatsby"
+             @keydown.enter="submit()" :disabled="searching">
+    </div>
+
+    <div class="field">
+      <label for="email">Kindle email</label>
+      <input id="email" type="email" x-model="kindleMail" placeholder="you@kindle.com"
+             @change="localStorage.setItem('kindle_mail', kindleMail)">
+    </div>
+
+    <div class="field">
+      <label for="apikey">API key</label>
+      <input id="apikey" type="text" x-model="apiKey" placeholder="your-api-key"
+             @change="localStorage.setItem('api_key', apiKey)">
+    </div>
+
+    <button @click="submit()" :disabled="!query.trim() || !kindleMail || searching">
+      <span x-text="searching ? 'Searching...' : 'Send to Kindle'"></span>
+    </button>
+
+    <template x-if="searchResults.length > 0">
+      <div>
+        <p class="section-label" x-text="searchResults.length + ' results'"></p>
+        <div class="results">
+          <template x-for="r in searchResults" :key="r.goodreads_url">
+            <div class="result-card" @click="downloadFromSearch(r)">
+              <img class="result-cover" :src="r.cover_url" :alt="r.title"
+                   onerror="this.style.display='none'">
+              <div class="result-info">
+                <div class="result-title" x-text="r.title"></div>
+                <div class="result-meta" x-text="r.author"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+
+    <template x-if="activeJobs.length > 0">
+      <div>
+        <p class="section-label">Active requests</p>
+        <template x-for="job in activeJobs" :key="job.id">
+          <div class="job-card">
+            <div class="status-steps">
+              <template x-for="s in steps" :key="s.key">
+                <div class="step"
+                     :class="{ 'active': job.status === s.key, 'done': stepIndex(job.status) > stepIndex(s.key) }">
+                  <template x-if="job.status === s.key && job.status !== 'done' && job.status !== 'error'">
+                    <span class="spinner"></span>
+                  </template>
+                  <template x-if="job.status !== s.key || job.status === 'done' || job.status === 'error'">
+                    <span class="step-dot"></span>
+                  </template>
+                  <span x-text="s.label"></span>
+                </div>
+              </template>
+            </div>
+            <template x-if="job.status === 'error'">
+              <div class="error-msg" x-text="job.error"></div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </template>
+  </div>
+
+  <script>
+    async function parseError(res) {
+      try {
+        const data = await res.json();
+        return data.detail || res.statusText;
+      } catch {
+        return await res.text() || res.statusText;
+      }
+    }
+
+    function ebookarr() {
+      return {
+        query: '',
+        kindleMail: localStorage.getItem('kindle_mail') || '',
+        apiKey: localStorage.getItem('api_key') || '',
+        searching: false,
+        searchResults: [],
+        activeJobs: [],
+        steps: [
+          { key: 'queued', label: 'Queued' },
+          { key: 'fetching_isbn', label: 'Fetching ISBN' },
+          { key: 'searching', label: 'Searching for book' },
+          { key: 'downloading', label: 'Downloading' },
+          { key: 'sending', label: 'Sending to Kindle' },
+          { key: 'done', label: 'Done' },
+        ],
+
+        stepIndex(key) {
+          const idx = this.steps.findIndex(s => s.key === key);
+          return idx === -1 ? -1 : idx;
+        },
+
+        isGoodreadsUrl(text) {
+          return /goodreads\.com/.test(text);
+        },
+
+        async submit() {
+          if (!this.query.trim() || !this.kindleMail) return;
+          this.searchResults = [];
+
+          if (this.isGoodreadsUrl(this.query)) {
+            await this.downloadGoodreads();
+          } else {
+            await this.search();
+          }
+        },
+
+        async search() {
+          this.searching = true;
+          try {
+            const params = new URLSearchParams({ q: this.query.trim(), key: this.apiKey });
+            const res = await fetch(`/search?${params}`);
+            if (!res.ok) throw new Error(await parseError(res));
+            const data = await res.json();
+            this.searchResults = data.results;
+          } catch (e) {
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+          } finally {
+            this.searching = false;
+          }
+        },
+
+        async downloadGoodreads() {
+          this.searching = true;
+          try {
+            const params = new URLSearchParams({
+              goodreads_url: this.query.trim(),
+              kindle_mail: this.kindleMail,
+              key: this.apiKey,
+            });
+            const res = await fetch(`/download?${params}`);
+            if (!res.ok) throw new Error(await parseError(res));
+            const { job_id } = await res.json();
+            this.trackJob(job_id);
+            this.query = '';
+          } catch (e) {
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+          } finally {
+            this.searching = false;
+          }
+        },
+
+        async downloadFromSearch(result) {
+          this.searchResults = [];
+          try {
+            const params = new URLSearchParams({
+              goodreads_url: result.goodreads_url,
+              kindle_mail: this.kindleMail,
+              key: this.apiKey,
+            });
+            const res = await fetch(`/download?${params}`);
+            if (!res.ok) throw new Error(await parseError(res));
+            const { job_id } = await res.json();
+            this.trackJob(job_id);
+          } catch (e) {
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+          }
+        },
+
+        trackJob(jobId) {
+          const job = { id: jobId, status: 'queued', error: null };
+          this.activeJobs.unshift(job);
+          this.pollJob(job);
+        },
+
+        async pollJob(job) {
+          while (job.status !== 'done' && job.status !== 'error') {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+              const params = new URLSearchParams({ key: this.apiKey });
+              const res = await fetch(`/jobs/${job.id}?${params}`);
+              if (!res.ok) break;
+              const data = await res.json();
+              job.status = data.status;
+              job.error = data.error;
+            } catch {
+              break;
+            }
+          }
+        },
+      };
+    }
+  </script>
+</body>
+</html>

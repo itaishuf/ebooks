@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     gmail_password_bw_item_title: str = "Ebookarr"
 
     # Anna's Archive
+    annas_archive_domain: str = "annas-archive.li"
     annas_archive_api_key_bw_item_title: str = "annas-archive.org (8pz82Gt)"
 
     # Paths
@@ -47,6 +48,10 @@ class Settings(BaseSettings):
     gmail_password: str = ""
     annas_archive_api_key: str = ""
     api_key: str = ""
+
+    # Test configuration
+    test_goodreads_url: str = ""
+    test_kindle_email: str = ""
 
 
 settings = Settings()

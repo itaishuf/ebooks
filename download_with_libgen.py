@@ -69,8 +69,16 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
 
 @log_call
 def download_book_using_selenium(url: str) -> Path:
+    download_dir = str(Path(settings.download_dir).resolve())
+    Path(download_dir).mkdir(parents=True, exist_ok=True)
+
     options = Options()
     options.add_argument("--headless")
+    options.set_preference("browser.download.folderList", 2)
+    options.set_preference("browser.download.dir", download_dir)
+    options.set_preference("browser.download.useDownloadDir", True)
+    options.set_preference("browser.helperApps.neverAsk.saveToDisk",
+                           "application/epub+zip,application/pdf,application/octet-stream")
     driver = webdriver.Firefox(options=options)
     try:
         driver.get(url)

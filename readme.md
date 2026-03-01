@@ -16,7 +16,7 @@ iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 ### Shortcut
 
 1. Download the 'Actions' app on your iPhone
-2. Change the Host to your server's Tailscale IP address
+2. Change the Host to your server's Tailscale IP address (the endpoint is `/download`)
 3. Enter your Kindle email address
 
 ### Bitwarden
