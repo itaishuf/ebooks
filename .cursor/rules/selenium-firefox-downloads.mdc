@@ -1,0 +1,45 @@
+---
+description: Selenium and Firefox download configuration patterns for download_with_libgen.py and tests
+globs: download_with_libgen.py,tests/**/*.py
+alwaysApply: false
+---
+
+# Selenium / Firefox Download Patterns
+
+## Required Firefox preferences for file downloads
+
+Always set these preferences when creating a `webdriver.Firefox` instance for downloading:
+
+```python
+options = webdriver.FirefoxOptions()
+options.set_preference("browser.download.folderList", 2)
+options.set_preference("browser.download.dir", settings.download_dir)
+options.set_preference("browser.helperApps.neverAsk.saveToDisk",
+                       "application/epub+zip,application/pdf,application/octet-stream")
+options.set_preference("browser.download.manager.showWhenStarting", False)
+options.set_preference("pdfjs.disabled", True)
+```
+
+Without `folderList=2` and `browser.download.dir`, Firefox defaults to the user's home directory, not `settings.download_dir`.
+
+## Always use `driver.quit()`, never `driver.close()`
+
+```python
+# ✅ Correct — fully tears down the WebDriver session
+driver.quit()
+
+# ❌ Wrong — leaves the session alive, causes ~120s timeout on next test
+driver.close()
+```
+
+## Download directory must exist
+
+Ensure `settings.download_dir` exists before running Selenium:
+
+```python
+os.makedirs(settings.download_dir, exist_ok=True)
+```
+
+## Anna's Archive domain instability
+
+The domain is configurable via `settings.annas_archive_domain` (set `ANNAS_ARCHIVE_DOMAIN` in `.env`). When the current domain stops resolving, common alternatives: `.li`, `.gs`, `.se`, `.org`. Never hardcode the domain.

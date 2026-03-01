@@ -1,0 +1,16 @@
+---
+description: Never start the server, services, or send real network requests unless the user explicitly asks
+alwaysApply: true
+---
+
+# No Unsolicited Processes
+
+Never start any of the following unless the user **explicitly** asks:
+- The FastAPI server (`uv run service.py`)
+- The systemd service (`systemctl start ebookarr`)
+- E2E or integration tests (they hit real external services and Gmail)
+- Any `curl` requests against the live service
+
+**Why**: The server runs 24/7 as a systemd unit. Starting a second instance causes a port conflict. Sending test emails uses real Gmail credentials and clutters the user's Kindle inbox.
+
+When debugging startup issues or logging, prefer reading `books.log` and suggesting commands for the user to run rather than running the service yourself.

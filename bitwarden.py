@@ -98,7 +98,6 @@ def fetch_secrets(settings: Settings) -> None:
     try:
         secret_mappings = [
             ("gmail_password", settings.gmail_password_bw_item_title),
-            ("annas_archive_api_key", settings.annas_archive_api_key_bw_item_title),
             ("api_key", settings.api_key_bw_item_title),
         ]
         for attr, item_title in secret_mappings:

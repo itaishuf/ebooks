@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import smtplib
+import time
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -27,11 +28,25 @@ from utils import log_call
 logger = logging.getLogger(__name__)
 
 
+async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession() as session, session.get(url) as response:
+                return await response.text()
+        except (aiohttp.ClientError, OSError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning(f"HTTP fetch attempt {attempt + 1} for {url} failed: {e}, retrying in {wait}s")
+                await asyncio.sleep(wait)
+    raise last_error
+
+
 @log_call
 async def get_isbn(url: str) -> str:
     try:
-        async with aiohttp.ClientSession() as session, session.get(url) as response:
-            text = await response.text()
+        text = await _fetch_page_with_retry(url)
     except aiohttp.InvalidUrlClientError as e:
         raise InvalidURLError(f"Goodreads URL isn't valid: {url}") from e
     soup = BeautifulSoup(text, 'html.parser')
@@ -71,12 +86,20 @@ def send_to_kindle(email: str, book_path: Path | None = None,
     logger.info(f"file size: {round(len(file_data) / 1000, 1)}KB")
     msg.add_attachment(file_data, maintype='application', subtype='octet-stream',
                        filename=file_name)
-    try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(settings.gmail_account, settings.gmail_password)
-            smtp.send_message(msg)
-    except smtplib.SMTPException as e:
-        raise EmailDeliveryError(f"Failed to send email to {email}") from e
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                smtp.login(settings.gmail_account, settings.gmail_password)
+                smtp.send_message(msg)
+            break
+        except (smtplib.SMTPException, OSError) as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning(f"SMTP attempt {attempt + 1} failed: {e}, retrying in {wait}s")
+                time.sleep(wait)
+            else:
+                raise EmailDeliveryError(f"Failed to send email to {email}") from e
     if book_path:
         os.remove(book_path)
 
@@ -84,8 +107,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
 @log_call
 async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
     query = f'https://{settings.annas_archive_domain}/search?q={isbn}&ext={ext}&lang=en&lang=he'
-    async with aiohttp.ClientSession() as session, session.get(query) as response:
-        text = await response.text()
+    text = await _fetch_page_with_retry(query)
     soup = BeautifulSoup(text, 'html.parser')
     hashes = []
     for a_tag in soup.find_all('a', href=re.compile(r'/md5/[0-9a-f]+')):
@@ -98,8 +120,7 @@ async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
 @log_call
 async def search_books(query: str) -> list[dict]:
     url = f'https://www.goodreads.com/search?q={query}'
-    async with aiohttp.ClientSession() as session, session.get(url) as response:
-        text = await response.text()
+    text = await _fetch_page_with_retry(url)
     soup = BeautifulSoup(text, 'html.parser')
 
     results = []
@@ -122,23 +143,6 @@ async def search_books(query: str) -> list[dict]:
     return results
 
 
-async def _download_via_annas_api(md5: str, ext: str) -> tuple[bytes, str]:
-    if not settings.annas_archive_api_key:
-        raise DownloadError("No Anna's Archive API key configured")
-    uri = f'/dyn/api/fast_download.json?md5={md5}&key={settings.annas_archive_api_key}'
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f'https://{settings.annas_archive_domain}/{uri}') as response:
-            data = await response.json()
-            download_url = data.get('download_url')
-            if not download_url:
-                raise DownloadError("Anna's Archive API did not return a download URL")
-        async with session.get(download_url) as response:
-            file_data = await response.read()
-    if not file_data:
-        raise DownloadError(f"Downloaded file is empty (md5={md5})")
-    return file_data, f'{md5}.{ext}'
-
-
 async def _download_via_libgen(isbn: str, md5_list: list[str]) -> Path:
     libgen_mirror = await choose_libgen_mirror()
     url = await get_libgen_link(isbn, md5_list, libgen_mirror)
@@ -151,32 +155,10 @@ async def ebook_download_by_md5(md5: str, ext: str, kindle_mail: str, on_status=
             on_status(status)
 
     _emit("downloading")
-
-    # Fallback: AA API -> LibGen
-    md5_list = [md5]
-    book_path: Path | None = None
-    file_data = b''
-    filename = ''
-    last_error: Exception | None = None
-
-    for source in ("annas_api", "libgen"):
-        try:
-            if source == "annas_api":
-                file_data, filename = await _download_via_annas_api(md5, ext)
-            else:
-                book_path = await _download_via_libgen(md5, md5_list)
-            break
-        except (ConnectionError, DownloadError, BookNotFoundError) as e:
-            logger.warning(f"Download via {source} ({ext}) failed: {e}")
-            last_error = e
-    else:
-        raise DownloadError(f"All download attempts failed for md5={md5}") from last_error
+    book_path = await _download_via_libgen(md5, [md5])
 
     _emit("sending")
-    if book_path:
-        await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
-    else:
-        await asyncio.to_thread(send_to_kindle, kindle_mail, None, file_data, filename)
+    await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
 
     _emit("done")
 
@@ -200,39 +182,23 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
 
     _emit("downloading")
 
-    # Fallback chain: AA epub -> AA pdf -> LibGen epub -> LibGen pdf
-    attempts: list[tuple[str, list[str], str]] = []
-    if epub_hashes:
-        attempts.append(("annas_api", epub_hashes, "epub"))
-    if pdf_hashes:
-        attempts.append(("annas_api", pdf_hashes, "pdf"))
-    if epub_hashes:
-        attempts.append(("libgen", epub_hashes, "epub"))
-    if pdf_hashes:
-        attempts.append(("libgen", pdf_hashes, "pdf"))
-
-    book_path: Path | None = None
-    file_data = b''
-    filename = ''
+    # Fallback chain: LibGen epub -> LibGen pdf
+    hashes_to_try = [(epub_hashes, "epub"), (pdf_hashes, "pdf")]
     last_error: Exception | None = None
 
-    for source, md5_list, ext in attempts:
+    for md5_list, ext in hashes_to_try:
+        if not md5_list:
+            continue
         try:
-            if source == "annas_api":
-                file_data, filename = await _download_via_annas_api(md5_list[0], ext)
-            else:
-                book_path = await _download_via_libgen(isbn, md5_list)
+            book_path = await _download_via_libgen(isbn, md5_list)
             break
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
-            logger.warning(f"Download via {source} ({ext}) failed: {e}")
+            logger.warning(f"LibGen download ({ext}) failed: {e}")
             last_error = e
     else:
         raise DownloadError(f"All download attempts failed for ISBN {isbn}") from last_error
 
     _emit("sending")
-    if book_path:
-        await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
-    else:
-        await asyncio.to_thread(send_to_kindle, kindle_mail, None, file_data, filename)
+    await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
 
     _emit("done")

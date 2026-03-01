@@ -1,0 +1,48 @@
+---
+description: Project architecture, file roles, and tech stack for the ebooks/ebookarr project
+alwaysApply: true
+---
+
+# Project Architecture
+
+## What this project does
+**Ebookarr** — a FastAPI web app that takes a Goodreads URL, finds the ebook, downloads it from LibGen via Selenium/Firefox, and sends it to a Kindle email via Gmail SMTP. Runs as `ebookarr.service` under systemd on port `19191`.
+
+## Key files and their roles
+
+| File | Role |
+|------|------|
+| `service.py` | FastAPI app, `jobs` dict (module-level), all endpoints |
+| `download_flow.py` | Core pipeline: `get_isbn`, `get_book_md5`, `ebook_download`, `ebook_download_by_md5`, `search_books` |
+| `download_with_libgen.py` | Selenium/Firefox download from LibGen (`choose_libgen_mirror`, `get_libgen_link`, `download_book_using_selenium`) |
+| `config.py` | Pydantic-settings `Settings` class — single source of truth for all config |
+| `bitwarden.py` | BW CLI wrapper (currently disabled; secrets come from `.env`) |
+| `static/index.html` | Alpine.js SPA — no build step, loaded from CDN |
+| `tests/test_e2e.py` | Real E2E tests — no mocks, require live network + credentials |
+| `books.log` | Structured log file; `@log_call` decorator logs function entry and return |
+| `exceptions.py` | Custom exceptions: `BookNotFoundError`, `DownloadError`, `EmailDeliveryError`, `InvalidURLError` |
+
+## Download pipeline status values
+The `on_status` callback in `ebook_download` emits these values in order:
+`queued` → `fetching_isbn` → `searching` → `downloading` → `sending` → `done`  
+On failure: `error`
+
+These values are also used in the Alpine.js `steps` array in `static/index.html`. **Both must stay in sync.**
+
+## Tech stack
+- Python runtime: `uv` (always use `uv run`, never bare `python` or `pytest`)
+- Web framework: FastAPI + uvicorn
+- HTML/JS: Alpine.js (CDN), no build step
+- Browser automation: Selenium + Firefox (geckodriver)
+- HTTP client: `aiohttp`
+- HTML parsing: BeautifulSoup4
+- Config: pydantic-settings + `.env`
+- Tests: pytest with `e2e` marker; `uv run pytest -m e2e`
+
+## Endpoints
+- `GET /` — serves `static/index.html`
+- `POST /download` — starts async download job, returns `{job_id}`
+- `GET /jobs/{job_id}` — returns job status
+- `GET /download/{md5}` — direct MD5 download
+- `GET /search?q=...` — Goodreads book search
+- `GET /health` — health check

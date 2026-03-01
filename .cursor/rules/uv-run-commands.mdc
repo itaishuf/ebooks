@@ -1,0 +1,32 @@
+---
+description: Always use uv run for Python and pytest commands in this project
+alwaysApply: true
+---
+
+# Use `uv run` for All Commands
+
+This project uses `uv` as the Python runtime. Always prefix commands:
+
+```bash
+# ✅ Correct
+uv run service.py
+uv run pytest -v
+uv run pytest -m e2e
+uv run pytest -m "not e2e"
+
+# ❌ Wrong
+python service.py
+pytest -v
+```
+
+## Common commands
+
+| Task | Command |
+|------|---------|
+| Start server | `uv run service.py` (port 19191) |
+| All tests | `uv run pytest -v` |
+| Unit tests only | `uv run pytest -m "not e2e"` |
+| E2E tests only | `uv run pytest -m e2e` |
+| Health check | `curl -sf http://localhost:19191/health` |
+
+The `Makefile` also provides: `make start`, `make stop`, `make test`, `make test-unit`, `make test-e2e`, `make cycle`.

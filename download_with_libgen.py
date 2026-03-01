@@ -63,6 +63,8 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
             correct_active_links.append(link)
 
     if not correct_active_links:
+        correct_active_links = active_links
+    if not correct_active_links:
         raise BookNotFoundError(f"No libgen download found matching ISBN {isbn}")
     return correct_active_links[0]
 

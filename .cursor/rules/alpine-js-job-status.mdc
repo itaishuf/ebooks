@@ -1,0 +1,51 @@
+---
+description: Alpine.js reactivity patterns and job status values for static/index.html
+globs: static/index.html
+alwaysApply: false
+---
+
+# Alpine.js Patterns
+
+## Job status values
+
+The frontend `steps` array and the backend `on_status` callback must use **exactly** these values in order:
+
+```
+queued → fetching_isbn → searching → downloading → sending → done
+```
+
+On failure: `error`. Any change to this sequence requires updating **both** `download_flow.py` and `static/index.html`.
+
+## Alpine.js reactivity — use proxied references
+
+After pushing to an Alpine reactive array, use the array index to get the proxied object. Holding onto the original object reference bypasses reactivity:
+
+```javascript
+// ✅ Correct — mutate via the proxied reference
+this.activeJobs.unshift(jobObj);
+const job = this.activeJobs[0];  // Alpine-proxied reference
+job.status = 'downloading';      // Alpine detects the change
+
+// ❌ Wrong — jobObj is not proxied, Alpine won't detect mutations
+this.activeJobs.unshift(jobObj);
+jobObj.status = 'downloading';   // invisible to Alpine
+```
+
+## Error parsing helper
+
+The frontend uses `parseError(res)` to handle API errors gracefully:
+
+```javascript
+async function parseError(res) {
+    try {
+        const data = await res.json();
+        return data.detail || JSON.stringify(data);
+    } catch {
+        return await res.text();
+    }
+}
+```
+
+## Polling interval
+
+Job status is polled every **2 seconds** via `setInterval` against `GET /jobs/{job_id}`.

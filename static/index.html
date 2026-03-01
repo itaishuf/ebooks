@@ -356,9 +356,8 @@
         },
 
         trackJob(jobId) {
-          const job = { id: jobId, status: 'queued', error: null };
-          this.activeJobs.unshift(job);
-          this.pollJob(job);
+          this.activeJobs.unshift({ id: jobId, status: 'queued', error: null });
+          this.pollJob(this.activeJobs[0]);
         },
 
         async pollJob(job) {
