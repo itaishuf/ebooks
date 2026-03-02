@@ -30,7 +30,6 @@ All application secrets are fetched from a Bitwarden vault at startup. No plaint
 | Bitwarden Item Title | Password Field Contains |
 |---|---|
 | `Ebookarr` | Gmail app password |
-| `annas-archive.org (8pz82Gt)` | Anna's Archive API key |
 | `Ebookarr API Key` | Server API key for endpoint auth |
 
 4. Copy `.env.example` to `.env` and fill in your Bitwarden credentials:
@@ -184,7 +183,7 @@ All configuration is managed via a `.env` file (see `.env.example`):
 | `DOWNLOAD_DIR` | No | /tmp/ebooks | Selenium download directory |
 | `LOG_PATH` | No | ./books.log | Log file path |
 
-Secrets (`GMAIL_PASSWORD`, `ANNAS_ARCHIVE_API_KEY`, `API_KEY`) are fetched from Bitwarden at startup and are never stored on disk.
+Secrets (`GMAIL_PASSWORD`, `API_KEY`) are fetched from Bitwarden at startup and are never stored on disk.
 
 ## Development
 

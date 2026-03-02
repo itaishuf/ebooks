@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     gmail_password_bw_item_title: str = "Ebookarr"
 
     # Anna's Archive (search only, no paid API)
-    annas_archive_domain: str = "annas-archive.li"
+    annas_archive_domain: str = "annas-archive.gl"
 
     # Paths
     download_dir: str = "/tmp/ebooks"

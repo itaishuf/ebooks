@@ -12,11 +12,16 @@ EnvironmentFile=/opt/ebookarr/.env
 # Bitwarden CLI must be in PATH for the ebookarr user
 Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 ExecStart=/opt/ebookarr/.venv/bin/python service.py
-ExecStartPost=/bin/bash -c 'for i in $(seq 1 15); do curl -sf http://localhost:${PORT:-19191}/health && exit 0; sleep 2; done; exit 1'
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=60
 StartLimitBurst=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ebookarr
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target

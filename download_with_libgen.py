@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -42,7 +43,7 @@ async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str:
 
 @log_call
 async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: str) -> str:
-    links = [f'{libgen_mirror}/get.php?md5={md5}' for md5 in book_md5_list]
+    links = [f'{libgen_mirror}/get.php?md5={quote(md5)}' for md5 in book_md5_list]
 
     status = await gather_page_status(links)
     active_links = [stat for stat in status if stat]

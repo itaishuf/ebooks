@@ -7,6 +7,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -106,7 +107,8 @@ def send_to_kindle(email: str, book_path: Path | None = None,
 
 @log_call
 async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
-    query = f'https://{settings.annas_archive_domain}/search?q={isbn}&ext={ext}&lang=en&lang=he'
+    params = urlencode({"q": isbn, "ext": ext, "lang": ["en", "he"]}, doseq=True)
+    query = f'https://{settings.annas_archive_domain}/search?{params}'
     text = await _fetch_page_with_retry(query)
     soup = BeautifulSoup(text, 'html.parser')
     hashes = []
@@ -119,7 +121,7 @@ async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
 
 @log_call
 async def search_books(query: str) -> list[dict]:
-    url = f'https://www.goodreads.com/search?q={query}'
+    url = f'https://www.goodreads.com/search?q={quote(query)}'
     text = await _fetch_page_with_retry(url)
     soup = BeautifulSoup(text, 'html.parser')
 
@@ -173,29 +175,34 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
 
     _emit("searching")
     epub_hashes = await get_book_md5(isbn, ext="epub")
-    pdf_hashes: list[str] = []
     if not epub_hashes:
         logger.warning(f"No epub results for ISBN {isbn}, falling back to pdf")
-        pdf_hashes = await get_book_md5(isbn, ext="pdf")
-    if not epub_hashes and not pdf_hashes:
-        raise BookNotFoundError(f"No book found for ISBN {isbn}")
 
     _emit("downloading")
 
-    # Fallback chain: LibGen epub -> LibGen pdf
-    hashes_to_try = [(epub_hashes, "epub"), (pdf_hashes, "pdf")]
     last_error: Exception | None = None
+    book_path: Path | None = None
 
-    for md5_list, ext in hashes_to_try:
-        if not md5_list:
-            continue
+    if epub_hashes:
         try:
-            book_path = await _download_via_libgen(isbn, md5_list)
-            break
+            book_path = await _download_via_libgen(isbn, epub_hashes)
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
-            logger.warning(f"LibGen download ({ext}) failed: {e}")
+            logger.warning(f"LibGen download (epub) failed: {e}")
             last_error = e
-    else:
+
+    if not epub_hashes or last_error:
+        pdf_hashes = await get_book_md5(isbn, ext="pdf")
+        if pdf_hashes:
+            try:
+                book_path = await _download_via_libgen(isbn, pdf_hashes)
+                last_error = None
+            except (ConnectionError, DownloadError, BookNotFoundError) as e:
+                logger.warning(f"LibGen download (pdf) failed: {e}")
+                last_error = e
+        elif not epub_hashes:
+            raise BookNotFoundError(f"No book found for ISBN {isbn}")
+
+    if last_error or book_path is None:
         raise DownloadError(f"All download attempts failed for ISBN {isbn}") from last_error
 
     _emit("sending")

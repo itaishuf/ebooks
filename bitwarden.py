@@ -37,8 +37,8 @@ def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.C
         raise BitwardenError(f"bw {' '.join(args[:2])} failed: {exc.stderr.strip()}") from exc
 
 
-def bw_login() -> None:
-    """Log in to Bitwarden using API key credentials from environment variables.
+def bw_login(settings: Settings) -> None:
+    """Log in to Bitwarden using API key credentials from settings.
 
     The .env file uses BW_CLIENT_ID / BW_CLIENT_SECRET, but the Bitwarden CLI
     expects BW_CLIENTID / BW_CLIENTSECRET (no underscore). We bridge that here.
@@ -49,17 +49,18 @@ def bw_login() -> None:
     except BitwardenError:
         pass  # not logged in — that's fine
     _run_bw("login", "--apikey", extra_env={
-        "BW_CLIENTID": os.environ.get("BW_CLIENT_ID", ""),
-        "BW_CLIENTSECRET": os.environ.get("BW_CLIENT_SECRET", ""),
+        "BW_CLIENTID": settings.bw_client_id,
+        "BW_CLIENTSECRET": settings.bw_client_secret,
     })
 
 
-def bw_unlock() -> str:
-    """Unlock the vault using the master password from the BW_MASTER_PASSWORD env var.
+def bw_unlock(settings: Settings) -> str:
+    """Unlock the vault using the master password from settings.
 
     Returns the session key.
     """
-    result = _run_bw("unlock", "--passwordenv", "BW_MASTER_PASSWORD")
+    result = _run_bw("unlock", "--passwordenv", "BW_MASTER_PASSWORD",
+                     extra_env={"BW_MASTER_PASSWORD": settings.bw_master_password})
     match = re.search(r'BW_SESSION="([^"]+)"', result.stdout)
     if not match:
         raise BitwardenError("Failed to parse session key from 'bw unlock' output")
@@ -90,19 +91,24 @@ def bw_lock() -> None:
 
 def fetch_secrets(settings: Settings) -> None:
     """Log in to Bitwarden, fetch all application secrets, and lock the vault."""
-    logger.info("Fetching secrets from Bitwarden vault")
+    secret_mappings = [
+        ("gmail_password", settings.gmail_password_bw_item_title),
+        ("api_key", settings.api_key_bw_item_title),
+    ]
+    secrets_needed = [
+        (attr, title) for attr, title in secret_mappings
+        if title and not getattr(settings, attr)
+    ]
+    if not secrets_needed:
+        logger.info("All secrets already set from environment, skipping Bitwarden")
+        return
 
-    bw_login()
-    session = bw_unlock()
+    logger.info("Fetching secrets from Bitwarden vault")
+    bw_login(settings)
+    session = bw_unlock(settings)
 
     try:
-        secret_mappings = [
-            ("gmail_password", settings.gmail_password_bw_item_title),
-            ("api_key", settings.api_key_bw_item_title),
-        ]
-        for attr, item_title in secret_mappings:
-            if not item_title:
-                continue
+        for attr, item_title in secrets_needed:
             value = bw_get_item_password(session, item_title)
             setattr(settings, attr, value)
             logger.info(f"Loaded secret '{attr}' from Bitwarden item '{item_title}'")
