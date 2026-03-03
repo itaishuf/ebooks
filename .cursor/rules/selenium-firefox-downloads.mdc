@@ -40,6 +40,6 @@ Ensure `settings.download_dir` exists before running Selenium:
 os.makedirs(settings.download_dir, exist_ok=True)
 ```
 
-## Anna's Archive domain instability
+## Anna's Archive mirror selection
 
-The domain is configurable via `settings.annas_archive_domain` (set `ANNAS_ARCHIVE_DOMAIN` in `.env`). When the current domain stops resolving, common alternatives: `.li`, `.gs`, `.se`, `.org`. Never hardcode the domain.
+Anna's Archive mirrors are listed in `settings.annas_archive_mirrors` (can be overridden via `ANNAS_ARCHIVE_MIRRORS` in `.env`). At server startup, `lifespan()` health-checks all mirrors and stores the first healthy one in `settings.annas_archive_url`. Code should always use `settings.annas_archive_url`, never hardcode a domain. To add or reorder mirrors, edit the list in `config.py`.

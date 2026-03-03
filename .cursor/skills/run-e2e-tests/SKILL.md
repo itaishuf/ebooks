@@ -24,7 +24,7 @@ When asked to run and fix until passing:
 
 ### 1. Anna's Archive domain not resolving (DNS blocked)
 **Symptom**: `aiohttp.ClientConnectorError` or DNS lookup failure for `annas-archive.*`  
-**Fix**: Try a different domain — update `ANNAS_ARCHIVE_DOMAIN` in `.env`. Common working alternatives: `.li`, `.gs`, `.se`, `.org`
+**Fix**: The server auto-selects a healthy mirror at startup from `settings.annas_archive_mirrors`. If all mirrors are down, reorder or add working mirrors in `config.py` and restart.
 
 ### 2. Selenium downloading to wrong directory
 **Symptom**: Test waits forever for file in `settings.download_dir`, file appears in `~/Downloads` or `~`  

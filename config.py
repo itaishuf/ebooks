@@ -12,8 +12,19 @@ class Settings(BaseSettings):
     gmail_account: str = "itaishuf@gmail.com"
     gmail_password_bw_item_title: str = "Ebookarr"
 
-    # Anna's Archive (search only, no paid API)
-    annas_archive_domain: str = "annas-archive.gl"
+    # Anna's Archive mirrors (search only, no paid API)
+    annas_archive_mirrors: list[str] = [
+        "https://annas-archive.org",
+        "https://annas-archive.se",
+        "https://annas-archive.gs",
+        "https://annas-archive.li",
+        "https://annas-archive.gl",
+        "https://annas-archive.vg",
+        "https://annas-archive.pk",
+        "https://annas-archive.gd",
+    ]
+    # Populated at startup with the first healthy mirror
+    annas_archive_url: str = ""
 
     # Paths
     download_dir: str = "/tmp/ebooks"

@@ -20,6 +20,7 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 from bitwarden import fetch_secrets
 from config import settings
 from download_flow import ebook_download, ebook_download_by_md5, search_books
+from download_with_libgen import gather_page_status
 from exceptions import BitwardenError, BookNotFoundError, DownloadError, EmailDeliveryError, InvalidURLError
 
 current_job_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_job_id", default="-")
@@ -64,6 +65,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         ) from None
     if not settings.api_key:
         logger.warning("API_KEY is not set — all endpoints are unauthenticated")
+    status = await gather_page_status(settings.annas_archive_mirrors)
+    mirror = next((url for url in status if url), None)
+    if mirror:
+        settings.annas_archive_url = mirror
+        logger.info(f"Anna's Archive mirror selected: {mirror}")
+    else:
+        settings.annas_archive_url = settings.annas_archive_mirrors[0]
+        logger.warning(f"No Anna's Archive mirror responded; falling back to {settings.annas_archive_url}")
     _start_time = time.monotonic()
     yield
 

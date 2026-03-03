@@ -108,7 +108,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
 @log_call
 async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
     params = urlencode({"q": isbn, "ext": ext, "lang": ["en", "he"]}, doseq=True)
-    query = f'https://{settings.annas_archive_domain}/search?{params}'
+    query = f'{settings.annas_archive_url}/search?{params}'
     text = await _fetch_page_with_retry(query)
     soup = BeautifulSoup(text, 'html.parser')
     hashes = []
