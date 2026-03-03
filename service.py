@@ -79,7 +79,7 @@ async def security_headers(request, call_next):
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'none'; "
-        "script-src https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' https:; "
         "connect-src 'self'; "
@@ -147,7 +147,10 @@ async def _run_job(job_id: str, coro) -> None:
 
 @app.get('/')
 async def index():
-    return FileResponse(static_dir / "index.html")
+    return FileResponse(
+        static_dir / "index.html",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get('/health')

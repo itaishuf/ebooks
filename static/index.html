@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ebookarr</title>
+  <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   <style>
     :root {
@@ -203,7 +204,10 @@
     <div class="field">
       <label for="apikey">API key</label>
       <input id="apikey" type="text" x-model="apiKey" placeholder="your-api-key"
-             @change="localStorage.setItem('api_key', apiKey)">
+             @change="localStorage.setItem('api_key', apiKey)"
+             @input="apiKeyError = ''">
+      <p x-show="apiKeyError" x-text="apiKeyError"
+         style="color: var(--error); font-size: 0.85rem; margin-top: 0.25rem;"></p>
     </div>
 
     <button @click="submit()" :disabled="!query.trim() || !kindleMail || searching">
@@ -271,6 +275,7 @@
         query: '',
         kindleMail: localStorage.getItem('kindle_mail') || '',
         apiKey: localStorage.getItem('api_key') || '',
+        apiKeyError: '',
         searching: false,
         searchResults: [],
         activeJobs: [],
@@ -294,6 +299,7 @@
 
         async submit() {
           if (!this.query.trim() || !this.kindleMail) return;
+          this.apiKeyError = '';
           this.searchResults = [];
 
           if (this.isGoodreadsUrl(this.query)) {
@@ -308,6 +314,7 @@
           try {
             const params = new URLSearchParams({ q: this.query.trim(), key: this.apiKey });
             const res = await fetch(`/search?${params}`);
+            if (res.status === 401) { this.apiKeyError = await parseError(res); return; }
             if (!res.ok) throw new Error(await parseError(res));
             const data = await res.json();
             this.searchResults = data.results;
@@ -327,6 +334,7 @@
               key: this.apiKey,
             });
             const res = await fetch(`/download?${params}`);
+            if (res.status === 401) { this.apiKeyError = await parseError(res); return; }
             if (!res.ok) throw new Error(await parseError(res));
             const { job_id } = await res.json();
             this.trackJob(job_id);
@@ -339,7 +347,6 @@
         },
 
         async downloadFromSearch(result) {
-          this.searchResults = [];
           try {
             const params = new URLSearchParams({
               goodreads_url: result.goodreads_url,
@@ -347,7 +354,9 @@
               key: this.apiKey,
             });
             const res = await fetch(`/download?${params}`);
+            if (res.status === 401) { this.apiKeyError = await parseError(res); return; }
             if (!res.ok) throw new Error(await parseError(res));
+            this.searchResults = [];
             const { job_id } = await res.json();
             this.trackJob(job_id);
           } catch (e) {
@@ -366,6 +375,12 @@
             try {
               const params = new URLSearchParams({ key: this.apiKey });
               const res = await fetch(`/jobs/${job.id}?${params}`);
+              if (res.status === 401) {
+                this.apiKeyError = await parseError(res);
+                job.status = 'error';
+                job.error = 'Authentication failed';
+                break;
+              }
               if (!res.ok) break;
               const data = await res.json();
               job.status = data.status;
