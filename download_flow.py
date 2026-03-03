@@ -139,7 +139,7 @@ async def search_books(query: str) -> list[dict]:
             "title": title_tag.text.strip(),
             "author": author_tag.text.strip() if author_tag else "",
             "goodreads_url": goodreads_url,
-            "cover_url": img_tag["src"] if img_tag else "",
+            "cover_url": re.sub(r'\._S[XY]\d+_', '._SY475_', img_tag["src"]) if img_tag else "",
         })
 
     return results

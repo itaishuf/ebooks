@@ -5,257 +5,863 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ebookarr</title>
   <link rel="icon" href="/static/favicon.ico" type="image/x-icon">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Quicksand:wght@400;500;600&display=swap" rel="stylesheet">
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
   <style>
     :root {
-      --bg: #0f0f0f;
-      --surface: #1a1a1a;
-      --border: #2a2a2a;
-      --text: #e4e4e4;
-      --text-dim: #888;
-      --accent: #6c9eff;
-      --accent-dim: #4a7adb;
-      --error: #e05555;
-      --success: #4caf80;
-      --radius: 10px;
+      --bg: #F3E8D5;
+      --bg-warm: #FAF4EB;
+      --surface: #F5EBDA;
+      --border: #E0D2BF;
+      --border-light: #EAE0D0;
+      --text: #2A2A2A;
+      --text-dim: #7A6B5A;
+      --text-light: #9C8B78;
+      --accent: #C56A2A;
+      --accent-hover: #E08A3B;
+      --accent-light: rgba(197, 106, 42, 0.12);
+      --success: #556B3C;
+      --success-light: rgba(85, 107, 60, 0.12);
+      --secondary: #6E86A6;
+      --secondary-light: rgba(110, 134, 166, 0.12);
+      --error: #B5473A;
+      --error-light: rgba(181, 71, 58, 0.1);
+      --umber: #5B3A29;
+      --radius: 16px;
+      --radius-sm: 12px;
+      --shadow: 0 4px 20px rgba(91, 58, 41, 0.08);
+      --shadow-lg: 0 8px 32px rgba(91, 58, 41, 0.12);
+      --sidebar-w: 320px;
+      --font-heading: 'Cormorant Garamond', Georgia, serif;
+      --font-body: 'Quicksand', 'Segoe UI', sans-serif;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      background: var(--bg);
+      font-family: var(--font-body);
+      font-weight: 500;
       color: var(--text);
       min-height: 100dvh;
-      display: flex;
-      justify-content: center;
-      padding: 2rem 1rem;
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(ellipse at 12% 25%, rgba(197, 106, 42, 0.07) 0%, transparent 50%),
+        radial-gradient(ellipse at 78% 12%, rgba(110, 134, 166, 0.06) 0%, transparent 45%),
+        radial-gradient(ellipse at 50% 90%, rgba(85, 107, 60, 0.05) 0%, transparent 40%),
+        radial-gradient(ellipse at 92% 55%, rgba(224, 138, 59, 0.04) 0%, transparent 35%);
+      background-attachment: fixed;
     }
 
+    body::after {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(circle, rgba(91, 58, 41, 0.04) 1px, transparent 1px);
+      background-size: 5px 5px;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* ── App Grid Layout ── */
+
     .app {
-      width: 100%;
-      max-width: 480px;
+      display: grid;
+      grid-template-columns: var(--sidebar-w) 1fr;
+      min-height: 100dvh;
+    }
+
+    /* ── Sidebar ── */
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100dvh;
+      width: var(--sidebar-w);
+      padding: 2.5rem 1.75rem;
       display: flex;
       flex-direction: column;
       gap: 1.5rem;
+      background: linear-gradient(180deg, var(--bg-warm) 0%, var(--surface) 100%);
+      border-right: 1px solid var(--border);
+      box-shadow: 4px 0 24px rgba(91, 58, 41, 0.06);
+      overflow-y: auto;
+      z-index: 100;
     }
 
-    h1 {
-      font-size: 1.4rem;
-      font-weight: 600;
+    .sidebar-header {
       text-align: center;
-      letter-spacing: -0.02em;
+      padding-bottom: 0.5rem;
     }
 
-    .field { display: flex; flex-direction: column; gap: 0.35rem; }
-    .field label { font-size: 0.8rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
-
-    input[type="text"], input[type="email"] {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      color: var(--text);
-      padding: 0.75rem 1rem;
-      font-size: 1rem;
-      outline: none;
-      transition: border-color 0.15s;
+    .sidebar-header h1 {
+      font-family: var(--font-heading);
+      font-size: 2rem;
+      font-weight: 600;
+      color: var(--umber);
+      letter-spacing: 0.02em;
     }
-    input:focus { border-color: var(--accent); }
 
-    button {
-      background: var(--accent);
-      color: #fff;
+    .brush-divider {
+      height: 3px;
       border: none;
-      border-radius: var(--radius);
-      padding: 0.75rem 1rem;
-      font-size: 1rem;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.15s;
+      border-radius: 2px;
+      margin: 0.75rem auto 0;
+      width: 80%;
+      background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(197, 106, 42, 0.25) 15%,
+        rgba(224, 138, 59, 0.45) 40%,
+        rgba(197, 106, 42, 0.35) 60%,
+        rgba(85, 107, 60, 0.15) 85%,
+        transparent 100%
+      );
     }
-    button:hover { background: var(--accent-dim); }
-    button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    .results {
+    .sidebar-fields {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .result-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 0.75rem 1rem;
-      cursor: pointer;
-      transition: border-color 0.15s;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-    .result-card:hover { border-color: var(--accent); }
-
-    .result-cover {
-      width: 36px;
-      height: 52px;
-      object-fit: cover;
-      border-radius: 4px;
-      flex-shrink: 0;
-      background: var(--border);
-    }
-
-    .result-info {
-      min-width: 0;
+      gap: 1.25rem;
       flex: 1;
     }
 
-    .result-title {
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .field label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    input[type="text"], input[type="email"] {
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 0.75rem 1rem;
+      font-family: var(--font-body);
       font-size: 0.95rem;
       font-weight: 500;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
     }
-    .result-meta {
-      font-size: 0.75rem;
+
+    input::placeholder {
+      color: var(--text-light);
+      font-weight: 400;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-light);
+    }
+
+    .field-error {
+      color: var(--error);
+      font-size: 0.8rem;
+      font-weight: 500;
+      margin-top: 0.15rem;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+      color: var(--bg);
+      border: none;
+      border-radius: 50px;
+      padding: 0.85rem 1.5rem;
+      font-family: var(--font-body);
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.02em;
+      box-shadow: 0 3px 14px rgba(197, 106, 42, 0.25);
+      transition: box-shadow 0.3s, transform 0.2s;
+      margin-top: 0.5rem;
+    }
+
+    .btn-primary:hover {
+      box-shadow: 0 6px 22px rgba(197, 106, 42, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: 0 2px 8px rgba(197, 106, 42, 0.15);
+    }
+
+    /* ── Center Content ── */
+
+    .content {
+      padding: 3rem 3rem 3rem 3.5rem;
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    /* ── Welcome State ── */
+
+    .welcome {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 1rem;
+      opacity: 0;
+      animation: fadeUp 0.6s ease forwards;
+    }
+
+    .welcome-icon {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-light), var(--secondary-light));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .welcome-icon svg {
+      width: 36px;
+      height: 36px;
+      stroke: var(--accent);
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .welcome h2 {
+      font-family: var(--font-heading);
+      font-size: 1.8rem;
+      font-weight: 600;
+      color: var(--umber);
+    }
+
+    .welcome p {
       color: var(--text-dim);
-      margin-top: 0.2rem;
+      font-size: 1rem;
+      max-width: 320px;
+      line-height: 1.6;
+    }
+
+    /* ── Section Label ── */
+
+    .section-label {
+      font-family: var(--font-heading);
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--umber);
+      margin-bottom: 1.25rem;
+    }
+
+    /* ── Carousel ── */
+
+    .carousel-section {
+      opacity: 0;
+      animation: fadeUp 0.5s ease forwards;
+    }
+
+    .carousel-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .carousel {
+      display: flex;
+      gap: 1.5rem;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      scroll-behavior: smooth;
+      padding: 1rem 0.25rem 1.5rem;
+      flex: 1;
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    .carousel::-webkit-scrollbar { display: none; }
+
+    .carousel-arrow {
+      background: rgba(250, 244, 235, 0.9);
+      border: 1px solid var(--border);
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--umber);
+      font-size: 1.4rem;
+      font-family: var(--font-body);
+      font-weight: 600;
+      box-shadow: 0 2px 10px rgba(91, 58, 41, 0.08);
+      transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
+      flex-shrink: 0;
+    }
+
+    .carousel-arrow:hover {
+      background: var(--bg-warm);
+      box-shadow: 0 4px 16px rgba(91, 58, 41, 0.14);
+      transform: scale(1.05);
+    }
+
+    .carousel-arrow:active {
+      transform: scale(0.97);
+    }
+
+    .carousel-item {
+      scroll-snap-align: start;
+      flex-shrink: 0;
+      width: 155px;
+      height: 232px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      position: relative;
+      cursor: pointer;
+      background: linear-gradient(135deg, #E8D5C0, #D4C8B5);
+      box-shadow: 0 4px 16px rgba(91, 58, 41, 0.1);
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .carousel-item:hover {
+      transform: translateY(-8px) scale(1.02);
+      box-shadow: 0 12px 32px rgba(91, 58, 41, 0.18);
+    }
+
+    .carousel-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .carousel-overlay {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        180deg,
+        rgba(91, 58, 41, 0) 20%,
+        rgba(91, 58, 41, 0.75) 70%,
+        rgba(91, 58, 41, 0.92) 100%
+      );
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 1rem 0.85rem;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+
+    .carousel-item:hover .carousel-overlay {
+      opacity: 1;
+    }
+
+    .overlay-title {
+      font-family: var(--font-heading);
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--bg);
+      line-height: 1.3;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .overlay-author {
+      font-size: 0.75rem;
+      color: rgba(243, 232, 213, 0.8);
+      margin-top: 0.25rem;
+      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
+    }
+
+    .overlay-action {
+      margin-top: 0.6rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent-hover);
+    }
+
+    /* ── Active Jobs ── */
+
+    .jobs-section {
+      opacity: 0;
+      animation: fadeUp 0.5s ease forwards;
+      max-width: 520px;
+    }
+
+    .jobs-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
     }
 
     .job-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(250, 244, 235, 0.85), rgba(243, 232, 213, 0.95));
+      border: 1px solid var(--border-light);
       border-radius: var(--radius);
-      padding: 1rem;
+      padding: 1.5rem;
+      box-shadow: var(--shadow);
     }
 
     .status-steps {
       display: flex;
       flex-direction: column;
-      gap: 0.5rem;
-      margin-top: 0.5rem;
+      gap: 0.6rem;
     }
 
     .step {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      font-size: 0.85rem;
-      color: var(--text-dim);
+      gap: 0.6rem;
+      font-size: 0.88rem;
+      color: var(--text-light);
+      transition: color 0.3s;
     }
-    .step.active { color: var(--accent); font-weight: 500; }
-    .step.done { color: var(--success); }
+
+    .step.active {
+      color: var(--secondary);
+      font-weight: 600;
+    }
+
+    .step.done {
+      color: var(--success);
+      font-weight: 500;
+    }
 
     .step-dot {
-      width: 8px;
-      height: 8px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
       background: var(--border);
       flex-shrink: 0;
+      transition: background 0.3s, box-shadow 0.3s;
     }
-    .step.active .step-dot { background: var(--accent); }
-    .step.done .step-dot { background: var(--success); }
 
-    .error-msg {
-      color: var(--error);
-      font-size: 0.85rem;
-      margin-top: 0.5rem;
+    .step.active .step-dot {
+      background: var(--secondary);
+      box-shadow: 0 0 0 3px var(--secondary-light);
+    }
+
+    .step.done .step-dot {
+      background: var(--success);
+      box-shadow: 0 0 0 3px var(--success-light);
     }
 
     .spinner {
       display: inline-block;
-      width: 8px;
-      height: 8px;
-      border: 2px solid var(--accent);
+      width: 10px;
+      height: 10px;
+      border: 2px solid var(--secondary);
       border-top-color: transparent;
       border-radius: 50%;
-      animation: spin 0.6s linear infinite;
+      animation: spin 0.7s linear infinite;
       flex-shrink: 0;
     }
+
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    .section-label {
-      font-size: 0.75rem;
+    .error-msg {
+      color: var(--error);
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-top: 0.75rem;
+      padding: 0.65rem 0.85rem;
+      background: var(--error-light);
+      border-radius: var(--radius-sm);
+    }
+
+    /* ── Confirm Modal ── */
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(91, 58, 41, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .modal-card {
+      background: linear-gradient(180deg, var(--bg-warm) 0%, var(--surface) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem 2rem 1.5rem;
+      max-width: 360px;
+      width: 90%;
+      box-shadow: 0 12px 48px rgba(91, 58, 41, 0.2);
+      text-align: center;
+      animation: fadeUp 0.25s ease forwards;
+    }
+
+    .modal-card h3 {
+      font-family: var(--font-heading);
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--umber);
+      margin-bottom: 0.5rem;
+    }
+
+    .modal-book-title {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.95rem;
+      margin-bottom: 0.15rem;
+    }
+
+    .modal-book-author {
       color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
+      font-size: 0.85rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+    }
+
+    .modal-actions button {
+      padding: 0.65rem 1.5rem;
+      border-radius: 50px;
+      font-family: var(--font-body);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: box-shadow 0.2s, transform 0.15s;
+    }
+
+    .btn-confirm {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+      color: var(--bg);
+      border: none;
+      box-shadow: 0 3px 12px rgba(197, 106, 42, 0.25);
+    }
+
+    .btn-confirm:hover {
+      box-shadow: 0 5px 18px rgba(197, 106, 42, 0.35);
+      transform: translateY(-1px);
+    }
+
+    .btn-cancel {
+      background: transparent;
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+
+    .btn-cancel:hover {
+      background: rgba(255, 255, 255, 0.4);
+      color: var(--text);
+    }
+
+    /* ── Hamburger (mobile) ── */
+
+    .hamburger {
+      display: none;
+      position: fixed;
+      top: 1rem;
+      left: 1rem;
+      z-index: 1001;
+      background: rgba(250, 244, 235, 0.92);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--border);
+      width: 44px;
+      height: 44px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 10px rgba(91, 58, 41, 0.1);
+      transition: box-shadow 0.2s;
+      padding: 0;
+      font-size: 0;
+    }
+
+    .hamburger:hover {
+      box-shadow: 0 4px 16px rgba(91, 58, 41, 0.16);
+    }
+
+    .hamburger-lines {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 20px;
+    }
+
+    .hamburger-lines span {
+      display: block;
+      height: 2px;
+      background: var(--umber);
+      border-radius: 2px;
+      transition: transform 0.3s, opacity 0.3s;
+    }
+
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(91, 58, 41, 0.3);
+      z-index: 99;
+    }
+
+    /* ── Animations ── */
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Mobile Responsive ── */
+
+    @media (max-width: 768px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .hamburger {
+        display: flex;
+      }
+
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        height: 100dvh;
+        transform: translateX(-100%);
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: none;
+        z-index: 100;
+      }
+
+      .sidebar.open {
+        transform: translateX(0);
+        box-shadow: 8px 0 32px rgba(91, 58, 41, 0.15);
+      }
+
+      .sidebar-overlay.visible {
+        display: block;
+      }
+
+      .content {
+        padding: 4.5rem 1.25rem 2rem;
+      }
+
+      .carousel-wrapper {
+        gap: 0.5rem;
+      }
+
+      .carousel-arrow {
+        width: 36px;
+        height: 36px;
+        font-size: 1.1rem;
+      }
+
+      .carousel-item {
+        width: 130px;
+        height: 195px;
+      }
+
+      .jobs-section {
+        max-width: 100%;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .carousel-arrow {
+        display: none;
+      }
+
+      .content {
+        padding: 4.5rem 1rem 1.5rem;
+      }
+
+      .carousel-item {
+        width: 120px;
+        height: 180px;
+      }
     }
   </style>
 </head>
 <body>
   <div class="app" x-data="ebookarr()">
-    <h1>Ebookarr</h1>
 
-    <div class="field">
-      <label for="query">Book name or Goodreads URL</label>
-      <input id="query" type="text" x-model="query" placeholder="The Great Gatsby"
-             @keydown.enter="submit()" :disabled="searching">
-    </div>
-
-    <div class="field">
-      <label for="email">Kindle email</label>
-      <input id="email" type="email" x-model="kindleMail" placeholder="you@kindle.com"
-             @change="localStorage.setItem('kindle_mail', kindleMail)">
-    </div>
-
-    <div class="field">
-      <label for="apikey">API key</label>
-      <input id="apikey" type="text" x-model="apiKey" placeholder="your-api-key"
-             @change="localStorage.setItem('api_key', apiKey)"
-             @input="apiKeyError = ''">
-      <p x-show="apiKeyError" x-text="apiKeyError"
-         style="color: var(--error); font-size: 0.85rem; margin-top: 0.25rem;"></p>
-    </div>
-
-    <button @click="submit()" :disabled="!query.trim() || !kindleMail || searching">
-      <span x-text="searching ? 'Searching...' : 'Send to Kindle'"></span>
+    <!-- Hamburger toggle (mobile) -->
+    <button class="hamburger" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar">
+      <div class="hamburger-lines">
+        <span></span>
+        <span></span>
+        <span></span>
+      </div>
     </button>
 
-    <template x-if="searchResults.length > 0">
-      <div>
-        <p class="section-label" x-text="searchResults.length + ' results'"></p>
-        <div class="results">
-          <template x-for="r in searchResults" :key="r.goodreads_url">
-            <div class="result-card" @click="downloadFromSearch(r)">
-              <img class="result-cover" :src="r.cover_url" :alt="r.title"
-                   onerror="this.style.display='none'">
-              <div class="result-info">
-                <div class="result-title" x-text="r.title"></div>
-                <div class="result-meta" x-text="r.author"></div>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
-    </template>
+    <!-- Sidebar overlay (mobile) -->
+    <div class="sidebar-overlay"
+         :class="{ 'visible': sidebarOpen }"
+         @click="sidebarOpen = false"
+         x-show="sidebarOpen"
+         x-transition:enter="transition ease-out duration-300"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-200"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         style="display: none;"></div>
 
-    <template x-if="activeJobs.length > 0">
-      <div>
-        <p class="section-label">Active requests</p>
-        <template x-for="job in activeJobs" :key="job.id">
-          <div class="job-card">
-            <div class="status-steps">
-              <template x-for="s in steps" :key="s.key">
-                <div class="step"
-                     :class="{ 'active': job.status === s.key, 'done': stepIndex(job.status) > stepIndex(s.key) }">
-                  <template x-if="job.status === s.key && job.status !== 'done' && job.status !== 'error'">
-                    <span class="spinner"></span>
-                  </template>
-                  <template x-if="job.status !== s.key || job.status === 'done' || job.status === 'error'">
-                    <span class="step-dot"></span>
-                  </template>
-                  <span x-text="s.label"></span>
+    <!-- Left Sidebar -->
+    <aside class="sidebar" :class="{ 'open': sidebarOpen }">
+      <div class="sidebar-header">
+        <h1>Ebookarr</h1>
+        <hr class="brush-divider">
+      </div>
+
+      <div class="sidebar-fields">
+        <div class="field">
+          <label for="query">Book name or Goodreads URL</label>
+          <input id="query" type="text" x-model="query"
+                 placeholder="The Great Gatsby"
+                 @keydown.enter="submit()" :disabled="searching">
+        </div>
+
+        <div class="field">
+          <label for="email">Kindle email</label>
+          <input id="email" type="email" x-model="kindleMail"
+                 placeholder="you@kindle.com"
+                 @change="localStorage.setItem('kindle_mail', kindleMail)">
+        </div>
+
+        <div class="field">
+          <label for="apikey">API key</label>
+          <input id="apikey" type="text" x-model="apiKey"
+                 placeholder="your-api-key"
+                 @change="localStorage.setItem('api_key', apiKey)"
+                 @input="apiKeyError = ''">
+          <p x-show="apiKeyError" x-text="apiKeyError" class="field-error"></p>
+        </div>
+
+        <button class="btn-primary"
+                @click="submit(); sidebarOpen = false"
+                :disabled="!query.trim() || !kindleMail || searching">
+          <span x-text="searching ? 'Searching\u2026' : 'Search Book'"></span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Center Content -->
+    <main class="content">
+
+      <!-- Welcome state -->
+      <template x-if="searchResults.length === 0 && activeJobs.length === 0">
+        <div class="welcome">
+          <div class="welcome-icon">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+              <line x1="12" y1="6" x2="12" y2="13"/>
+              <line x1="9" y1="9.5" x2="15" y2="9.5"/>
+            </svg>
+          </div>
+          <h2>Find your next book</h2>
+          <p>Search by title or paste a Goodreads URL to discover and send ebooks to your Kindle</p>
+        </div>
+      </template>
+
+      <!-- Carousel: search results -->
+      <template x-if="searchResults.length > 0">
+        <div class="carousel-section">
+          <p class="section-label" x-text="searchResults.length + ' books found'"></p>
+          <div class="carousel-wrapper">
+            <button class="carousel-arrow"
+                    @click="scrollCarousel(-1)"
+                    aria-label="Scroll left">&lsaquo;</button>
+            <div class="carousel">
+              <template x-for="r in searchResults" :key="r.goodreads_url">
+                <div class="carousel-item" @click="confirmBook = r">
+                  <img :src="r.cover_url" :alt="r.title"
+                       onerror="this.style.display='none'">
+                  <div class="carousel-overlay">
+                    <div class="overlay-title" x-text="r.title"></div>
+                    <div class="overlay-author" x-text="r.author"></div>
+                    <div class="overlay-action">Send to Kindle &rarr;</div>
+                  </div>
                 </div>
               </template>
             </div>
-            <template x-if="job.status === 'error'">
-              <div class="error-msg" x-text="job.error"></div>
+            <button class="carousel-arrow"
+                    @click="scrollCarousel(1)"
+                    aria-label="Scroll right">&rsaquo;</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Active jobs (replaces carousel) -->
+      <template x-if="activeJobs.length > 0 && searchResults.length === 0">
+        <div class="jobs-section">
+          <p class="section-label">Active requests</p>
+          <div class="jobs-list">
+            <template x-for="job in activeJobs" :key="job.id">
+              <div class="job-card">
+                <div class="status-steps">
+                  <template x-for="s in steps" :key="s.key">
+                    <div class="step"
+                         :class="{
+                           'active': job.status === s.key,
+                           'done': stepIndex(job.status) > stepIndex(s.key)
+                         }">
+                      <template x-if="job.status === s.key && job.status !== 'done' && job.status !== 'error'">
+                        <span class="spinner"></span>
+                      </template>
+                      <template x-if="job.status !== s.key || job.status === 'done' || job.status === 'error'">
+                        <span class="step-dot"></span>
+                      </template>
+                      <span x-text="s.label"></span>
+                    </div>
+                  </template>
+                </div>
+                <template x-if="job.status === 'error'">
+                  <div class="error-msg" x-text="job.error"></div>
+                </template>
+              </div>
             </template>
           </div>
-        </template>
+        </div>
+      </template>
+
+    </main>
+
+    <!-- Confirmation modal -->
+    <template x-if="confirmBook">
+      <div class="modal-backdrop" @click.self="confirmBook = null">
+        <div class="modal-card">
+          <h3>Send to Kindle?</h3>
+          <p class="modal-book-title" x-text="confirmBook.title"></p>
+          <p class="modal-book-author" x-text="confirmBook.author"></p>
+          <div class="modal-actions">
+            <button class="btn-cancel" @click="confirmBook = null">No</button>
+            <button class="btn-confirm" @click="downloadFromSearch(confirmBook); confirmBook = null">Yes</button>
+          </div>
+        </div>
       </div>
     </template>
   </div>
@@ -279,6 +885,8 @@
         searching: false,
         searchResults: [],
         activeJobs: [],
+        sidebarOpen: false,
+        confirmBook: null,
         steps: [
           { key: 'queued', label: 'Queued' },
           { key: 'fetching_isbn', label: 'Fetching ISBN' },
@@ -297,10 +905,16 @@
           return /goodreads\.com/.test(text);
         },
 
+        scrollCarousel(dir) {
+          const el = document.querySelector('.carousel');
+          if (el) el.scrollBy({ left: dir * 200, behavior: 'smooth' });
+        },
+
         async submit() {
           if (!this.query.trim() || !this.kindleMail) return;
           this.apiKeyError = '';
           this.searchResults = [];
+          this.activeJobs = this.activeJobs.filter(j => j.status !== 'error');
 
           if (this.isGoodreadsUrl(this.query)) {
             await this.downloadGoodreads();
