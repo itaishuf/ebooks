@@ -19,9 +19,11 @@ _BW_TIMEOUT = 5  # seconds
 
 
 def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    cmd_label = f"bw {' '.join(args[:2])}"
+    logger.debug(f"Running: {cmd_label}")
     env = {**os.environ, **(extra_env or {})}
     try:
-        return subprocess.run(
+        result = subprocess.run(
             ["bw", *args],
             env=env,
             capture_output=True,
@@ -29,12 +31,14 @@ def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.C
             check=True,
             timeout=_BW_TIMEOUT,
         )
+        logger.debug(f"Completed: {cmd_label}")
+        return result
     except FileNotFoundError:
         raise BitwardenError("Bitwarden CLI ('bw') is not installed or not in PATH")
     except subprocess.TimeoutExpired as exc:
-        raise BitwardenError(f"bw {' '.join(args[:2])} timed out after {_BW_TIMEOUT}s") from exc
+        raise BitwardenError(f"{cmd_label} timed out after {_BW_TIMEOUT}s") from exc
     except subprocess.CalledProcessError as exc:
-        raise BitwardenError(f"bw {' '.join(args[:2])} failed: {exc.stderr.strip()}") from exc
+        raise BitwardenError(f"{cmd_label} failed: {exc.stderr.strip()}") from exc
 
 
 def bw_login(settings: Settings) -> None:
@@ -73,6 +77,7 @@ def bw_get_item_password(session: str, item_title: str) -> str:
     The session key is passed via the BW_SESSION env var to avoid
     leaking it through the process argument list.
     """
+    logger.info(f"Fetching password for Bitwarden item '{item_title}'")
     result = _run_bw("get", "item", item_title, extra_env={"BW_SESSION": session})
     try:
         item = json.loads(result.stdout)
@@ -80,9 +85,11 @@ def bw_get_item_password(session: str, item_title: str) -> str:
         raise BitwardenError(f"Invalid JSON from 'bw get item {item_title}'") from exc
 
     try:
-        return item["login"]["password"]
+        password = item["login"]["password"]
     except (KeyError, TypeError) as exc:
         raise BitwardenError(f"No login password found in Bitwarden item '{item_title}'") from exc
+    logger.info(f"Successfully retrieved password for '{item_title}'")
+    return password
 
 
 def bw_lock() -> None:
@@ -93,7 +100,7 @@ def fetch_secrets(settings: Settings) -> None:
     """Log in to Bitwarden, fetch all application secrets, and lock the vault."""
     secret_mappings = [
         ("gmail_password", settings.gmail_password_bw_item_title),
-        ("api_key", settings.api_key_bw_item_title),
+        ("api_key", settings.api_key_bw_item_title)
     ]
     secrets_needed = [
         (attr, title) for attr, title in secret_mappings

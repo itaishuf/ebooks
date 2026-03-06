@@ -54,7 +54,7 @@ _start_time: float = 0.0
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     global _start_time
     try:
-        (settings)
+        fetch_secrets(settings)
     except BitwardenError as exc:
         raise SystemExit(
             f"\n  Bitwarden error: {exc}\n\n"
