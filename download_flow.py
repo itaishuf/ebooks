@@ -23,6 +23,7 @@ from exceptions import (
     DownloadError,
     EmailDeliveryError,
     InvalidURLError,
+    ManualDownloadRequiredError,
 )
 from utils import log_call
 
@@ -112,9 +113,11 @@ async def get_book_md5(isbn: str, ext: str = "epub") -> list[str]:
     text = await _fetch_page_with_retry(query)
     soup = BeautifulSoup(text, 'html.parser')
     hashes = []
+    seen_hashes = set()
     for a_tag in soup.find_all('a', href=re.compile(r'/md5/[0-9a-f]+')):
         match = re.search(r'/md5/([0-9a-f]+)', a_tag['href'])
-        if match:
+        if match and match.group(1) not in seen_hashes:
+            seen_hashes.add(match.group(1))
             hashes.append(match.group(1))
     return hashes
 
@@ -181,6 +184,7 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
     _emit("downloading")
 
     last_error: Exception | None = None
+    fallback_error: ManualDownloadRequiredError | None = None
     book_path: Path | None = None
 
     if epub_hashes:
@@ -188,6 +192,8 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
             book_path = await _download_via_libgen(isbn, epub_hashes)
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
             logger.warning(f"LibGen download (epub) failed: {e}")
+            if isinstance(e, ManualDownloadRequiredError):
+                fallback_error = e
             last_error = e
 
     if not epub_hashes or last_error:
@@ -196,13 +202,22 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
             try:
                 book_path = await _download_via_libgen(isbn, pdf_hashes)
                 last_error = None
+                fallback_error = None
             except (ConnectionError, DownloadError, BookNotFoundError) as e:
                 logger.warning(f"LibGen download (pdf) failed: {e}")
+                if isinstance(e, ManualDownloadRequiredError):
+                    fallback_error = e
                 last_error = e
         elif not epub_hashes:
             raise BookNotFoundError(f"No book found for ISBN {isbn}")
 
     if last_error or book_path is None:
+        if fallback_error is not None:
+            raise ManualDownloadRequiredError(
+                f"All download attempts failed for ISBN {isbn}",
+                fallback_url=fallback_error.fallback_url,
+                fallback_message=fallback_error.fallback_message,
+            ) from last_error
         raise DownloadError(f"All download attempts failed for ISBN {isbn}") from last_error
 
     _emit("sending")

@@ -491,6 +491,20 @@
       border-radius: var(--radius-sm);
     }
 
+    .error-msg p + p {
+      margin-top: 0.6rem;
+    }
+
+    .error-link {
+      color: var(--umber);
+      font-weight: 600;
+      word-break: break-word;
+    }
+
+    .error-link:hover {
+      color: var(--accent);
+    }
+
     /* ── Confirm Modal ── */
 
     .modal-backdrop {
@@ -840,7 +854,20 @@
                   </template>
                 </div>
                 <template x-if="job.status === 'error'">
-                  <div class="error-msg" x-text="job.error"></div>
+                  <div class="error-msg">
+                    <p x-text="job.error"></p>
+                    <template x-if="job.fallback">
+                      <p>
+                        <span x-text="job.fallback.message"></span>
+                        <a class="error-link"
+                           :href="job.fallback.url"
+                           target="_blank"
+                           rel="noopener noreferrer">
+                          Open LibGen download page
+                        </a>
+                      </p>
+                    </template>
+                  </div>
                 </template>
               </div>
             </template>
@@ -933,7 +960,7 @@
             const data = await res.json();
             this.searchResults = data.results;
           } catch (e) {
-            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message, fallback: null });
           } finally {
             this.searching = false;
           }
@@ -954,7 +981,7 @@
             this.trackJob(job_id);
             this.query = '';
           } catch (e) {
-            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message, fallback: null });
           } finally {
             this.searching = false;
           }
@@ -974,12 +1001,12 @@
             const { job_id } = await res.json();
             this.trackJob(job_id);
           } catch (e) {
-            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message });
+            this.activeJobs.unshift({ id: 'err-' + Date.now(), status: 'error', error: e.message, fallback: null });
           }
         },
 
         trackJob(jobId) {
-          this.activeJobs.unshift({ id: jobId, status: 'queued', error: null });
+          this.activeJobs.unshift({ id: jobId, status: 'queued', error: null, fallback: null });
           this.pollJob(this.activeJobs[0]);
         },
 
@@ -993,12 +1020,14 @@
                 this.apiKeyError = await parseError(res);
                 job.status = 'error';
                 job.error = 'Authentication failed';
+                job.fallback = null;
                 break;
               }
               if (!res.ok) break;
               const data = await res.json();
               job.status = data.status;
               job.error = data.error;
+              job.fallback = data.fallback || null;
             } catch {
               break;
             }

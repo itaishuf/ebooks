@@ -16,10 +16,13 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 
 from config import settings
-from exceptions import BookNotFoundError, DownloadError
+from exceptions import BookNotFoundError, DownloadError, ManualDownloadRequiredError
 from utils import find_newest_file_in_downloads, log_call
 
 logger = logging.getLogger(__name__)
+DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
+DOWNLOAD_POLL_ATTEMPTS = 10
+DOWNLOAD_RECLICK_ATTEMPTS = 2
 
 
 @log_call
@@ -72,42 +75,125 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
 
 @log_call
 def download_book_using_selenium(url: str) -> Path:
-    download_dir = str(Path(settings.download_dir).resolve())
-    Path(download_dir).mkdir(parents=True, exist_ok=True)
+    download_dir = Path(settings.download_dir).resolve()
+    download_dir.mkdir(parents=True, exist_ok=True)
 
     options = Options()
     options.add_argument("--headless")
     options.set_preference("browser.download.folderList", 2)
-    options.set_preference("browser.download.dir", download_dir)
+    options.set_preference("browser.download.dir", str(download_dir))
     options.set_preference("browser.download.useDownloadDir", True)
     options.set_preference("browser.helperApps.neverAsk.saveToDisk",
                            "application/epub+zip,application/pdf,application/octet-stream")
+    options.set_preference("browser.download.manager.showWhenStarting", False)
+    options.set_preference("pdfjs.disabled", True)
+
+    logger.info(
+        f"Starting Selenium download for {url} with download_dir={download_dir}, "
+        f"headless=True, click_attempts={settings.selenium_click_attempts}"
+    )
+
     driver = webdriver.Firefox(options=options)
     try:
         driver.get(url)
-        original_handle = driver.current_window_handle
-
         button_xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
 
-        for _ in range(settings.selenium_click_attempts):
-            try:
-                elem = driver.find_element(By.XPATH, button_xpath)
-                elem.click()
-                break
-            except ElementClickInterceptedException:
-                driver.find_element(By.TAG_NAME, 'body').click()
-                driver.switch_to.window(original_handle)
+        for page_attempt in range(DOWNLOAD_RECLICK_ATTEMPTS):
+            attempt_started_at = time.time()
+            logger.info(
+                f"LibGen Selenium page attempt {page_attempt + 1}/{DOWNLOAD_RECLICK_ATTEMPTS} "
+                f"for {url} with attempt_started_at={attempt_started_at:.3f}"
+            )
+            _log_download_dir_state(download_dir, f"Before click page attempt {page_attempt + 1}")
+            _click_download_button(driver, button_xpath, url)
+            book_path = _wait_for_download(download_dir, attempt_started_at, url, page_attempt + 1)
+            if book_path:
+                time.sleep(DOWNLOAD_POLL_INTERVAL_SECONDS)
+                logger.info(f"Selenium download completed for {url}: {book_path}")
+                return book_path
 
-        book_path = find_newest_file_in_downloads()
-        while book_path.suffix == '.part':
-            time.sleep(0.5)
-            book_path = find_newest_file_in_downloads()
-        time.sleep(0.5)
-        return book_path
+            logger.warning(
+                f"No new download artifact detected for {url} after page attempt "
+                f"{page_attempt + 1}/{DOWNLOAD_RECLICK_ATTEMPTS}"
+            )
+            if page_attempt < DOWNLOAD_RECLICK_ATTEMPTS - 1:
+                driver.get(url)
+
+        fallback_message = (
+            "Automatic download failed after multiple attempts. "
+            "Please open the LibGen link and download the file manually."
+        )
+        raise ManualDownloadRequiredError(
+            "Automatic download failed because Selenium never detected a new downloaded file.",
+            fallback_url=url,
+            fallback_message=fallback_message,
+        )
     except NoSuchElementException as e:
         raise DownloadError('Failed to find book in libgen') from e
     finally:
-        driver.close()
+        driver.quit()
+
+
+def _click_download_button(driver: webdriver.Firefox, button_xpath: str, url: str) -> None:
+    original_handle = driver.current_window_handle
+    for click_attempt in range(settings.selenium_click_attempts):
+        try:
+            elem = driver.find_element(By.XPATH, button_xpath)
+            elem.click()
+            logger.info(
+                f"Clicked LibGen download button for {url} on click attempt "
+                f"{click_attempt + 1}/{settings.selenium_click_attempts}"
+            )
+            return
+        except ElementClickInterceptedException as e:
+            logger.warning(
+                f"LibGen click intercepted for {url} on attempt "
+                f"{click_attempt + 1}/{settings.selenium_click_attempts}: {e}"
+            )
+            driver.find_element(By.TAG_NAME, 'body').click()
+            driver.switch_to.window(original_handle)
+    raise DownloadError(f"Failed to click LibGen download button for {url}")
+
+
+def _wait_for_download(download_dir: Path, since: float, url: str, page_attempt: int) -> Path | None:
+    for poll_attempt in range(DOWNLOAD_POLL_ATTEMPTS):
+        try:
+            book_path = find_newest_file_in_downloads(since=since)
+            logger.info(
+                f"Detected download candidate for {url} on page attempt {page_attempt}, "
+                f"poll attempt {poll_attempt + 1}/{DOWNLOAD_POLL_ATTEMPTS}: {book_path.name}"
+            )
+            if book_path.suffix != '.part':
+                return book_path
+            logger.info(
+                f"Download for {url} is still partial on page attempt {page_attempt}: "
+                f"{book_path.name}"
+            )
+        except FileNotFoundError as e:
+            logger.warning(
+                f"No new download artifact yet for {url} on page attempt {page_attempt}, "
+                f"poll attempt {poll_attempt + 1}/{DOWNLOAD_POLL_ATTEMPTS}: {e}"
+            )
+        _log_download_dir_state(
+            download_dir,
+            f"After poll attempt {poll_attempt + 1} for page attempt {page_attempt}"
+        )
+        time.sleep(DOWNLOAD_POLL_INTERVAL_SECONDS)
+    return None
+
+
+def _log_download_dir_state(download_dir: Path, label: str) -> None:
+    files = [f for f in download_dir.iterdir() if f.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    details = []
+    now = time.time()
+    for path in files[:5]:
+        age_s = now - path.stat().st_mtime
+        details.append(f"{path.name}(suffix={path.suffix or '<none>'},age_s={age_s:.2f})")
+    logger.info(
+        f"{label}: download_dir={download_dir}, file_count={len(files)}, "
+        f"files={details}"
+    )
 
 
 @log_call

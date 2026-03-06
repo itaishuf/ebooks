@@ -68,19 +68,44 @@ def log_call(func: Callable) -> Callable:
 
 
 @log_call
-def find_newest_file_in_downloads() -> Path:
+def find_newest_file_in_downloads(since: float | None = None) -> Path:
     downloads_dir = Path(settings.download_dir)
     try:
         files = [f for f in downloads_dir.iterdir() if f.is_file()]
+        if not files:
+            raise FileNotFoundError(f"No files found in download directory {downloads_dir}")
 
-        newest_file = max(files, key=os.path.getmtime)
+        candidates = files
+        if since is not None:
+            candidates = [f for f in files if os.path.getmtime(f) >= since]
+            if not candidates:
+                newest_existing = max(files, key=os.path.getmtime)
+                newest_existing_age = time.time() - os.path.getmtime(newest_existing)
+                logger.info(
+                    f"No new download detected in {downloads_dir} since {since:.3f}; "
+                    f"existing_files={len(files)}, newest_existing={newest_existing.name}, "
+                    f"newest_existing_age_s={newest_existing_age:.2f}"
+                )
+                raise FileNotFoundError("No new file detected after Selenium click")
+
+        newest_file = max(candidates, key=os.path.getmtime)
         last_modified = datetime.fromtimestamp(
             os.path.getmtime(newest_file))
         if datetime.now() - last_modified > timedelta(minutes=settings.selenium_download_timeout_minutes):
-            raise FileNotFoundError()
+            newest_age_s = time.time() - os.path.getmtime(newest_file)
+            raise FileNotFoundError(
+                f"Newest downloaded file {newest_file.name} is stale "
+                f"(age={newest_age_s:.2f}s)"
+            )
         last_modified = last_modified.strftime('%Y-%m-%d %H:%M:%S')
 
-        logger.info({"file name": newest_file.name, "time": last_modified})
+        logger.info(
+            f"Selected downloaded file {newest_file.name} from {downloads_dir} "
+            f"(files={len(files)}, candidates={len(candidates)}, since={since}, "
+            f"last_modified={last_modified})"
+        )
         return newest_file.absolute()
+    except FileNotFoundError:
+        raise
     except Exception as e:
         raise FileNotFoundError("Error locating the file downloaded with Selenium") from e

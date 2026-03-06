@@ -20,8 +20,15 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 from bitwarden import fetch_secrets
 from config import settings
 from download_flow import ebook_download, ebook_download_by_md5, search_books
-from download_with_libgen import gather_page_status
-from exceptions import BitwardenError, BookNotFoundError, DownloadError, EmailDeliveryError, InvalidURLError
+from exceptions import (
+    BitwardenError,
+    BookNotFoundError,
+    DownloadError,
+    EmailDeliveryError,
+    InvalidURLError,
+    ManualDownloadRequiredError,
+)
+from runtime_bootstrap import bootstrap_annas_archive_url
 
 current_job_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_job_id", default="-")
 
@@ -65,14 +72,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         ) from None
     if not settings.api_key:
         logger.warning("API_KEY is not set — all endpoints are unauthenticated")
-    status = await gather_page_status(settings.annas_archive_mirrors)
-    mirror = next((url for url in status if url), None)
-    if mirror:
-        settings.annas_archive_url = mirror
-        logger.info(f"Anna's Archive mirror selected: {mirror}")
-    else:
-        settings.annas_archive_url = settings.annas_archive_mirrors[0]
-        logger.warning(f"No Anna's Archive mirror responded; falling back to {settings.annas_archive_url}")
+    await bootstrap_annas_archive_url()
     _start_time = time.monotonic()
     yield
 
@@ -131,9 +131,20 @@ def _make_job() -> str:
     jobs[job_id] = {
         "status": "queued",
         "error": None,
+        "fallback": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     return job_id
+
+
+def _job_error_update(error: Exception) -> dict:
+    update = {"status": "error", "error": str(error), "fallback": None}
+    if isinstance(error, ManualDownloadRequiredError):
+        update["fallback"] = {
+            "url": error.fallback_url,
+            "message": error.fallback_message,
+        }
+    return update
 
 
 async def _run_job(job_id: str, coro) -> None:
@@ -142,16 +153,20 @@ async def _run_job(job_id: str, coro) -> None:
         await coro
     except (InvalidURLError, BookNotFoundError) as e:
         logger.warning(e)
-        jobs[job_id].update(status="error", error=str(e))
+        jobs[job_id].update(_job_error_update(e))
     except (EmailDeliveryError, DownloadError) as e:
         logger.error(e)
-        jobs[job_id].update(status="error", error=str(e))
+        jobs[job_id].update(_job_error_update(e))
     except aiohttp.ClientError as e:
         logger.error(f"Network error: {e}", exc_info=True)
-        jobs[job_id].update(status="error", error=f"Failed to connect to external service: {e}")
+        jobs[job_id].update(
+            status="error",
+            error=f"Failed to connect to external service: {e}",
+            fallback=None,
+        )
     except Exception as e:
         logger.error(e, exc_info=True)
-        jobs[job_id].update(status="error", error="Unexpected error processing request")
+        jobs[job_id].update(status="error", error="Unexpected error processing request", fallback=None)
 
 
 @app.get('/')
