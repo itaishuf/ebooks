@@ -6,43 +6,45 @@ alwaysApply: true
 # Project Architecture
 
 ## What this project does
-**Ebookarr** — a FastAPI web app that takes a Goodreads URL, finds the ebook, downloads it from LibGen via Selenium/Firefox, and sends it to a Kindle email via Gmail SMTP. Runs as `ebookarr.service` under systemd on port `19191`.
+**Ebookarr** is a FastAPI + Alpine.js app that searches for ebooks, downloads them via Selenium/Firefox, and sends them to a Kindle email via Gmail SMTP. It can run under systemd or via Docker Compose behind a dedicated Tailscale Funnel node.
 
 ## Key files and their roles
 
 | File | Role |
 |------|------|
-| `service.py` | FastAPI app, `jobs` dict (module-level), all endpoints |
+| `service.py` | FastAPI app, security headers, auth/public routes, in-memory `jobs` store |
+| `auth.py` | Supabase bearer-token parsing, JWT/JWKS validation, verified-email enforcement |
 | `download_flow.py` | Core pipeline: `get_isbn`, `get_book_md5`, `ebook_download`, `ebook_download_by_md5`, `search_books` |
 | `download_with_libgen.py` | Selenium/Firefox download from LibGen (`choose_libgen_mirror`, `get_libgen_link`, `download_book_using_selenium`) |
-| `config.py` | Pydantic-settings `Settings` class — single source of truth for all config |
-| `bitwarden.py` | BW CLI wrapper (currently disabled; secrets come from `.env`) |
-| `static/index.html` | Alpine.js SPA — no build step, loaded from CDN |
+| `config.py` | Pydantic-settings `Settings` class for server, Supabase, Bitwarden, paths, and mirrors |
+| `bitwarden.py` | Bitwarden CLI bootstrap that fills runtime secrets still missing from env |
+| `runtime_bootstrap.py` | Startup helpers such as Anna's Archive mirror selection |
+| `static/index.html` | Alpine.js SPA with Supabase magic-link session handling and authenticated fetches |
+| `docker-compose.yml` / `tailscale/bootstrap.sh` | Optional Docker + Tailscale Funnel deployment using the `itai-books` node |
 | `tests/test_e2e.py` | Real E2E tests — no mocks, require live network + credentials |
-| `books.log` | Structured log file; `@log_call` decorator logs function entry and return |
-| `exceptions.py` | Custom exceptions: `BookNotFoundError`, `DownloadError`, `EmailDeliveryError`, `InvalidURLError` |
+| `tests/test_auth.py` / `tests/test_service_auth.py` | Focused auth and protected-route coverage |
+| `books.log` | Structured log file including request job/user context |
+
+## Auth and routes
+- Public routes: `/`, `/health`, `/auth/config`
+- Protected read routes: `GET /search`, `GET /jobs/{job_id}`
+- Protected write routes: `POST /download`, `POST /download/md5`
+- Protected routes use Supabase bearer tokens and require verified email by default
+- Jobs store `owner_user_id` and `owner_email`; foreign job lookups return `404`
 
 ## Download pipeline status values
-The `on_status` callback in `ebook_download` emits these values in order:
 `queued` → `fetching_isbn` → `searching` → `downloading` → `sending` → `done`  
 On failure: `error`
 
-These values are also used in the Alpine.js `steps` array in `static/index.html`. **Both must stay in sync.**
+These values are also used in the Alpine.js `steps` array in `static/index.html`. Keep backend and frontend in sync.
 
 ## Tech stack
 - Python runtime: `uv` (always use `uv run`, never bare `python` or `pytest`)
 - Web framework: FastAPI + uvicorn
 - HTML/JS: Alpine.js (CDN), no build step
 - Browser automation: Selenium + Firefox (geckodriver)
+- Auth: Supabase Auth + JWT verification via JWKS
 - HTTP client: `aiohttp`
 - HTML parsing: BeautifulSoup4
-- Config: pydantic-settings + `.env`
+- Config: pydantic-settings + minimal `.env` + Bitwarden bootstrap
 - Tests: pytest with `e2e` marker; `uv run pytest -m e2e`
-
-## Endpoints
-- `GET /` — serves `static/index.html`
-- `POST /download` — starts async download job, returns `{job_id}`
-- `GET /jobs/{job_id}` — returns job status
-- `GET /download/{md5}` — direct MD5 download
-- `GET /search?q=...` — Goodreads book search
-- `GET /health` — health check

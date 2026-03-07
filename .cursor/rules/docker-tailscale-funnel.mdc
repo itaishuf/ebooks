@@ -1,0 +1,27 @@
+---
+description: Docker Compose and Tailscale Funnel patterns for the container deployment path
+globs: Dockerfile,docker-compose.yml,readme.md,tailscale/**/*.sh,.dockerignore
+alwaysApply: false
+---
+
+# Docker + Tailscale Funnel
+
+## Runtime image
+- Keep container runtime simple: plain `python` entrypoint, no `uv` at runtime
+- The image must still include Firefox and Bitwarden CLI because downloads and startup bootstrap depend on them
+- The current deployment intentionally builds from `python:latest`; only change that if the user asks for a pinned base
+
+## Compose contract
+- The deployment port is Compose-driven, not buried in the image
+- `docker-compose.yml` is the source of truth for `PORT`, `DOWNLOAD_DIR`, and `LOG_PATH`
+- Do not add an app healthcheck unless the user explicitly wants one
+
+## Tailscale shape
+- The Tailscale sidecar owns the shared network namespace and keeps the hostname `itai-books`
+- Use `.tailscale.env` for Tailscale-specific configuration in this deployment path
+- Do not reintroduce `TS_SERVE_CONFIG` or checked-in Serve/Funnel JSON for this stack
+- `tailscale/bootstrap.sh` should start `containerboot`, wait for Tailscale to come up, then enable Funnel against the configured local app port
+
+## Documentation
+- Keep `readme.md` aligned with the actual env-file names, Compose-driven port, and automatic Funnel startup flow
+- When describing the public URL, tie it to the `itai-books` Tailscale node rather than the host machine name

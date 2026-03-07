@@ -1,3 +1,11 @@
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm AS deps
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv export --no-dev --format requirements-txt -o requirements.txt
+
+
 FROM python:latest
 
 ARG BW_VERSION=2025.11.0
@@ -20,7 +28,7 @@ RUN apt-get update \
     && install -m 755 /tmp/bw /usr/local/bin/bw \
     && rm -rf /var/lib/apt/lists/* /tmp/bw-linux.zip /tmp/bw
 
-COPY requirements.txt ./
+COPY --from=deps /app/requirements.txt ./
 RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 

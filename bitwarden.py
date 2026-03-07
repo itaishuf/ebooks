@@ -102,7 +102,6 @@ def fetch_secrets(settings: Settings) -> None:
     """Log in to Bitwarden, fetch all application secrets, and lock the vault."""
     secret_mappings = [
         ("gmail_password", settings.gmail_password_bw_item_id),
-        ("api_key", settings.api_key_bw_item_id),
     ]
     secrets_needed = [
         (attr, item_id) for attr, item_id in secret_mappings

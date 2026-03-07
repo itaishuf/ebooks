@@ -9,6 +9,7 @@ dependencies = [
     "email-validator>=2.0",
     "fastapi==0.116.1",
     "pydantic-settings>=2.0",
+    "pyjwt[crypto]>=2.11.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "selenium==4.35.0",
@@ -34,4 +35,9 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "e2e: end-to-end tests requiring network access and credentials",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
 ]

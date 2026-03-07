@@ -145,7 +145,7 @@ async def test_run_job_maps_manual_fallback_error_to_job():
     await service._run_job(job_id, failing_coro())
 
     assert service.jobs[job_id]["status"] == "error"
-    assert service.jobs[job_id]["error"] == "All download attempts failed for ISBN 123"
+    assert service.jobs[job_id]["error"] == "Automatic download failed after trying the available sources."
     assert service.jobs[job_id]["fallback"] == {
         "url": "https://libgen.test/get.php?md5=123",
         "message": "Try downloading the file manually from LibGen.",

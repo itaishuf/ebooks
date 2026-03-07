@@ -118,7 +118,6 @@ def test_fetch_secrets_uses_bitwarden_with_bootstrap_credentials(
 ):
     mock_get.side_effect = lambda session, item_id: {
         "gmail-item-id": "gmail-pass",
-        "api-item-id": "api-key-123",
     }[item_id]
 
     mock_settings = MagicMock()
@@ -126,17 +125,14 @@ def test_fetch_secrets_uses_bitwarden_with_bootstrap_credentials(
     mock_settings.bw_client_secret = "client-secret"
     mock_settings.bw_master_password = "master-password"
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
-    mock_settings.api_key_bw_item_id = "api-item-id"
     mock_settings.gmail_password = ""
-    mock_settings.api_key = ""
 
     fetch_secrets(mock_settings)
 
     mock_login.assert_called_once_with(mock_settings)
     mock_unlock.assert_called_once_with(mock_settings)
-    assert mock_get.call_count == 2
+    assert mock_get.call_count == 1
     assert mock_settings.gmail_password == "gmail-pass"
-    assert mock_settings.api_key == "api-key-123"
     mock_lock.assert_called_once()
 
 
@@ -147,19 +143,15 @@ def test_fetch_secrets_uses_bitwarden_with_bootstrap_credentials(
 def test_fetch_secrets_populates_settings(mock_login, mock_unlock, mock_get, mock_lock):
     mock_get.side_effect = lambda session, item_id: {
         "gmail-item-id": "gmail-pass",
-        "api-item-id": "api-key-123",
     }[item_id]
 
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
-    mock_settings.api_key_bw_item_id = "api-item-id"
     mock_settings.gmail_password = ""
-    mock_settings.api_key = ""
 
     fetch_secrets(mock_settings)
 
     assert mock_settings.gmail_password == "gmail-pass"
-    assert mock_settings.api_key == "api-key-123"
     mock_lock.assert_called_once()
 
 
@@ -170,9 +162,7 @@ def test_fetch_secrets_populates_settings(mock_login, mock_unlock, mock_get, moc
 def test_fetch_secrets_locks_vault_on_failure(mock_login, mock_unlock, mock_get, mock_lock):
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
-    mock_settings.api_key_bw_item_id = ""
     mock_settings.gmail_password = ""
-    mock_settings.api_key = ""
 
     with pytest.raises(BitwardenError):
         fetch_secrets(mock_settings)
@@ -189,9 +179,7 @@ def test_fetch_secrets_skips_bitwarden_when_runtime_secrets_are_already_loaded(
 ):
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
-    mock_settings.api_key_bw_item_id = "api-item-id"
     mock_settings.gmail_password = "already-set"
-    mock_settings.api_key = "already-set"
 
     fetch_secrets(mock_settings)
 
@@ -210,9 +198,7 @@ def test_fetch_secrets_skips_empty_item_ids(mock_login, mock_unlock, mock_get, m
 
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
-    mock_settings.api_key_bw_item_id = ""
     mock_settings.gmail_password = ""
-    mock_settings.api_key = ""
 
     fetch_secrets(mock_settings)
 

@@ -1,8 +1,6 @@
 import asyncio
 import contextvars
 import logging
-import os
-import shutil
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -12,11 +10,25 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import aiohttp
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 
+from abuse_protection import (
+    RateLimitPolicy,
+    SlidingWindowRateLimiter,
+    cleanup_download_artifacts,
+    cleanup_expired_jobs,
+    enforce_job_admission,
+    extract_client_ip,
+    rate_limit_exceeded,
+    reject_query_string_auth,
+    sanitize_error_detail,
+    sanitize_for_log,
+)
+from auth import AuthenticatedUser, get_current_user, validate_auth_settings
 from bitwarden import fetch_secrets
 from config import settings
 from download_flow import ebook_download, ebook_download_by_md5, search_books
@@ -31,21 +43,28 @@ from exceptions import (
 from runtime_bootstrap import bootstrap_annas_archive_url
 
 current_job_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_job_id", default="-")
+current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_user_id", default="-")
 
 log_path = Path(settings.log_path)
 log_path.parent.mkdir(parents=True, exist_ok=True)
 
 
-class _JobIdFilter(logging.Filter):
+class _RequestContextFilter(logging.Filter):
     def filter(self, record):
+        record.msg = sanitize_for_log(record.getMessage())
+        record.args = ()
         record.job_id = current_job_id.get("-")
+        record.user_id = current_user_id.get("-")
         return True
 
 
-_log_format = '%(asctime)s, [%(filename)s:%(lineno)s - %(funcName)s()], %(levelname)s, job=%(job_id)s, "%(message)s"'
+_log_format = (
+    '%(asctime)s, [%(filename)s:%(lineno)s - %(funcName)s()], %(levelname)s, '
+    'job=%(job_id)s, user=%(user_id)s, "%(message)s"'
+)
 _handler = RotatingFileHandler(str(log_path), maxBytes=5 * 1024 * 1024, backupCount=3)
 _handler.setFormatter(logging.Formatter(_log_format))
-_handler.addFilter(_JobIdFilter())
+_handler.addFilter(_RequestContextFilter())
 
 logging.basicConfig(level=logging.DEBUG, handlers=[_handler])
 logger = logging.getLogger(__name__)
@@ -55,12 +74,31 @@ for _noisy in ("selenium", "urllib3", "aiohttp", "asyncio"):
 
 jobs: dict[str, dict] = {}
 _start_time: float = 0.0
+_last_cleanup_at: float = 0.0
+_rate_limiter = SlidingWindowRateLimiter()
+_download_semaphore: asyncio.Semaphore | None = None
+
+
+def _content_security_policy() -> str:
+    connect_sources = ["'self'"]
+    if settings.supabase_url:
+        connect_sources.append(settings.supabase_url.rstrip("/"))
+
+    return (
+        "default-src 'none'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' https:; "
+        f"connect-src {' '.join(connect_sources)}; "
+        "font-src 'self' https://fonts.gstatic.com"
+    )
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    global _start_time
+    global _download_semaphore, _start_time
     try:
+        validate_auth_settings()
         fetch_secrets(settings)
     except BitwardenError as exc:
         raise SystemExit(
@@ -72,30 +110,34 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "    2. Verify the configured Bitwarden item IDs still point to the "
             "correct vault items\n"
         ) from None
-    if not settings.api_key:
-        logger.warning("API_KEY is not set — all endpoints are unauthenticated")
+    except ValueError as exc:
+        raise SystemExit(f"\n  Auth configuration error: {exc}\n") from None
     await bootstrap_annas_archive_url()
+    _download_semaphore = asyncio.Semaphore(settings.max_concurrent_download_jobs)
     _start_time = time.monotonic()
     yield
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
 
 @app.middleware("http")
-async def security_headers(request, call_next):
+async def security_headers(request: Request, call_next):
+    try:
+        reject_query_string_auth(request)
+    except HTTPException as exc:
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Content-Security-Policy"] = _content_security_policy()
+        return response
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net 'unsafe-eval'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' https:; "
-        "connect-src 'self'; "
-        "font-src 'self'"
-    )
+    response.headers["Content-Security-Policy"] = _content_security_policy()
     return response
 
 
@@ -117,30 +159,53 @@ class DownloadRequest(BaseModel):
         return v
 
 
-def verify_api_key(api_key: str = Query(alias="key", default="")):
-    if settings.api_key and api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-
 class Md5DownloadRequest(BaseModel):
     md5: str = Field(pattern=r'^[0-9a-fA-F]{32}$')
     ext: str = Field(default="epub", pattern=r'^(epub|pdf|mobi|azw3)$')
     kindle_mail: EmailStr
 
 
-def _make_job() -> str:
+def require_authenticated_user(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+    current_user_id.set(user.user_id)
+    return user
+
+
+def _make_job(owner: AuthenticatedUser | None = None, client_ip: str | None = None) -> str:
+    now = datetime.now(timezone.utc)
     job_id = str(uuid4())
     jobs[job_id] = {
         "status": "queued",
         "error": None,
         "fallback": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now.isoformat(),
+        "created_at_epoch": now.timestamp(),
+        "finished_at_epoch": None,
+        "owner_user_id": owner.user_id if owner else None,
+        "owner_email": owner.email if owner else None,
+        "client_ip": client_ip,
     }
     return job_id
 
 
 def _job_error_update(error: Exception) -> dict:
-    update = {"status": "error", "error": str(error), "fallback": None}
+    error_message = "Request failed"
+    if isinstance(error, InvalidURLError):
+        error_message = "Invalid Goodreads URL"
+    elif isinstance(error, BookNotFoundError):
+        error_message = "No matching book was found."
+    elif isinstance(error, ManualDownloadRequiredError):
+        error_message = "Automatic download failed after trying the available sources."
+    elif isinstance(error, EmailDeliveryError):
+        error_message = "The ebook was downloaded, but delivery to Kindle failed."
+    elif isinstance(error, DownloadError):
+        error_message = "The ebook download failed."
+
+    update = {
+        "status": "error",
+        "error": sanitize_error_detail(error_message, "Request failed"),
+        "fallback": None,
+        "finished_at_epoch": time.time(),
+    }
     if isinstance(error, ManualDownloadRequiredError):
         update["fallback"] = {
             "url": error.fallback_url,
@@ -149,26 +214,92 @@ def _job_error_update(error: Exception) -> dict:
     return update
 
 
+def _download_semaphore_instance() -> asyncio.Semaphore:
+    global _download_semaphore
+    if _download_semaphore is None:
+        _download_semaphore = asyncio.Semaphore(settings.max_concurrent_download_jobs)
+    return _download_semaphore
+
+
+def _public_job_payload(job: dict) -> dict:
+    return {
+        "status": job["status"],
+        "error": job["error"],
+        "fallback": job["fallback"],
+        "created_at": job["created_at"],
+    }
+
+
+def _perform_maintenance(*, force: bool = False) -> None:
+    global _last_cleanup_at
+    now = time.time()
+    if not force and now - _last_cleanup_at < settings.cleanup_interval_seconds:
+        return
+
+    removed_jobs = cleanup_expired_jobs(jobs, ttl_seconds=settings.job_ttl_seconds, now=now)
+    removed_artifacts = cleanup_download_artifacts(
+        settings.download_dir,
+        ttl_seconds=settings.download_artifact_ttl_seconds,
+        now=now,
+    )
+    if removed_jobs:
+        logger.info(f"Removed {len(removed_jobs)} expired jobs from memory.")
+    if removed_artifacts:
+        logger.info(f"Removed {len(removed_artifacts)} expired download artifacts.")
+    _last_cleanup_at = now
+
+
+def _enforce_endpoint_rate_limits(
+    *,
+    endpoint_name: str,
+    ip_policy: RateLimitPolicy,
+    user_policy: RateLimitPolicy,
+    client_ip: str,
+    user: AuthenticatedUser,
+) -> None:
+    for policy, key in (
+        (ip_policy, f"ip:{client_ip}"),
+        (user_policy, f"user:{user.user_id}"),
+    ):
+        result = _rate_limiter.check(policy, key)
+        if result.allowed:
+            continue
+        logger.warning(f"Rate limit hit for {endpoint_name} using {key}.")
+        raise rate_limit_exceeded(result.retry_after_seconds)
+
+
+async def _run_download_job(job_id: str, job_coro_factory) -> None:
+    async with _download_semaphore_instance():
+        await _run_job(job_id, job_coro_factory())
+
+
 async def _run_job(job_id: str, coro) -> None:
     current_job_id.set(job_id)
     try:
         await coro
+        jobs[job_id]["finished_at_epoch"] = time.time()
     except (InvalidURLError, BookNotFoundError) as e:
-        logger.warning(e)
+        logger.warning(f"Job failed with a request error: {sanitize_error_detail(e, 'Request failed')}")
         jobs[job_id].update(_job_error_update(e))
     except (EmailDeliveryError, DownloadError) as e:
-        logger.error(e)
+        logger.error(f"Job failed while downloading or sending: {sanitize_error_detail(e, 'Download failed')}")
         jobs[job_id].update(_job_error_update(e))
     except aiohttp.ClientError as e:
-        logger.error(f"Network error: {e}", exc_info=True)
+        logger.error(f"Network error while processing job: {sanitize_error_detail(e, 'External service unavailable')}")
         jobs[job_id].update(
             status="error",
-            error=f"Failed to connect to external service: {e}",
+            error="Failed to connect to an external service.",
             fallback=None,
+            finished_at_epoch=time.time(),
         )
     except Exception as e:
-        logger.error(e, exc_info=True)
-        jobs[job_id].update(status="error", error="Unexpected error processing request", fallback=None)
+        logger.error(f"Unexpected job failure {e.__class__.__name__}: {sanitize_error_detail(e, 'Unexpected error')}")
+        jobs[job_id].update(
+            status="error",
+            error="Unexpected error processing request.",
+            fallback=None,
+            finished_at_epoch=time.time(),
+        )
 
 
 @app.get('/')
@@ -181,78 +312,172 @@ async def index():
 
 @app.get('/health')
 async def health():
-    download_dir = Path(settings.download_dir)
-    dir_ok = download_dir.is_dir() and os.access(download_dir, os.W_OK)
-    try:
-        disk = shutil.disk_usage(download_dir)
-        disk_free_mb = round(disk.free / (1024 * 1024))
-    except OSError:
-        disk_free_mb = None
+    return {"status": "ok"}
 
-    in_flight = sum(1 for j in jobs.values() if j["status"] not in ("done", "error"))
-    uptime_s = round(time.monotonic() - _start_time) if _start_time else 0
 
+@app.get('/auth/config')
+async def auth_config():
     return {
-        "status": "ok",
-        "uptime_seconds": uptime_s,
-        "jobs_in_flight": in_flight,
-        "jobs_total": len(jobs),
-        "download_dir_writable": dir_ok,
-        "disk_free_mb": disk_free_mb,
+        "supabase_url": settings.supabase_url,
+        "supabase_publishable_key": settings.supabase_publishable_key,
     }
 
 
 @app.get('/search')
 async def search(
+    request: Request,
     q: str = Query(min_length=1, max_length=200),
-    _: None = Depends(verify_api_key),
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ):
+    _perform_maintenance()
+    client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
+    _enforce_endpoint_rate_limits(
+        endpoint_name="search",
+        ip_policy=RateLimitPolicy(
+            name="search:ip",
+            limit=settings.search_rate_limit_per_ip,
+            window_seconds=settings.search_rate_limit_window_seconds,
+        ),
+        user_policy=RateLimitPolicy(
+            name="search:user",
+            limit=settings.search_rate_limit_per_user,
+            window_seconds=settings.search_rate_limit_window_seconds,
+        ),
+        client_ip=client_ip,
+        user=user,
+    )
     try:
         results = await search_books(q.strip())
     except Exception as e:
-        logger.error(f"Search failed for query '{q}': {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=f"Search failed: {e}") from e
+        logger.error(f"Search failed for query {sanitize_for_log(q)}: {sanitize_error_detail(e, 'Search failed')}")
+        raise HTTPException(status_code=502, detail="Search is temporarily unavailable.") from e
     return {"results": results}
 
 
-@app.get('/download')
+@app.post('/download')
 async def download_from_goodreads(
-    request: DownloadRequest = Depends(),
-    _: None = Depends(verify_api_key),
+    http_request: Request,
+    payload: DownloadRequest,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ):
-    job_id = _make_job()
+    _perform_maintenance()
+    client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
+    _enforce_endpoint_rate_limits(
+        endpoint_name="download",
+        ip_policy=RateLimitPolicy(
+            name="download:ip",
+            limit=settings.download_rate_limit_per_ip,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        user_policy=RateLimitPolicy(
+            name="download:user",
+            limit=settings.download_rate_limit_per_user,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        client_ip=client_ip,
+        user=user,
+    )
+    enforce_job_admission(
+        jobs,
+        user_id=user.user_id,
+        client_ip=client_ip,
+        max_in_flight_jobs=settings.max_in_flight_jobs,
+        max_queued_jobs=settings.max_queued_jobs,
+        max_jobs_per_user=settings.max_jobs_per_user,
+        max_jobs_per_ip=settings.max_jobs_per_ip,
+        retry_after_seconds=settings.overload_retry_after_seconds,
+    )
+    job_id = _make_job(user, client_ip=client_ip)
+    logger.info(f"Created Goodreads download job for {user.user_id}")
 
     def on_status(s):
-        jobs[job_id]["status"] = s
+        if job_id in jobs:
+            jobs[job_id]["status"] = s
 
     asyncio.create_task(
-        _run_job(job_id, ebook_download(str(request.goodreads_url), request.kindle_mail, on_status=on_status))
+        _run_download_job(
+            job_id,
+            lambda: ebook_download(str(payload.goodreads_url), payload.kindle_mail, on_status=on_status),
+        )
     )
     return {"job_id": job_id}
 
 
-@app.get('/download/md5')
+@app.post('/download/md5')
 async def download_from_md5(
-    request: Md5DownloadRequest = Depends(),
-    _: None = Depends(verify_api_key),
+    http_request: Request,
+    payload: Md5DownloadRequest,
+    user: AuthenticatedUser = Depends(require_authenticated_user),
 ):
-    job_id = _make_job()
+    _perform_maintenance()
+    client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
+    _enforce_endpoint_rate_limits(
+        endpoint_name="download-md5",
+        ip_policy=RateLimitPolicy(
+            name="download-md5:ip",
+            limit=settings.download_rate_limit_per_ip,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        user_policy=RateLimitPolicy(
+            name="download-md5:user",
+            limit=settings.download_rate_limit_per_user,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        client_ip=client_ip,
+        user=user,
+    )
+    enforce_job_admission(
+        jobs,
+        user_id=user.user_id,
+        client_ip=client_ip,
+        max_in_flight_jobs=settings.max_in_flight_jobs,
+        max_queued_jobs=settings.max_queued_jobs,
+        max_jobs_per_user=settings.max_jobs_per_user,
+        max_jobs_per_ip=settings.max_jobs_per_ip,
+        retry_after_seconds=settings.overload_retry_after_seconds,
+    )
+    job_id = _make_job(user, client_ip=client_ip)
+    logger.info(f"Created MD5 download job for {user.user_id}")
 
     def on_status(s):
-        jobs[job_id]["status"] = s
+        if job_id in jobs:
+            jobs[job_id]["status"] = s
 
     asyncio.create_task(
-        _run_job(job_id, ebook_download_by_md5(request.md5, request.ext, request.kindle_mail, on_status=on_status))
+        _run_download_job(
+            job_id,
+            lambda: ebook_download_by_md5(payload.md5, payload.ext, payload.kindle_mail, on_status=on_status),
+        )
     )
     return {"job_id": job_id}
 
 
 @app.get('/jobs/{job_id}')
-async def get_job(job_id: UUID, _: None = Depends(verify_api_key)):
+async def get_job(job_id: UUID, request: Request, user: AuthenticatedUser = Depends(require_authenticated_user)):
+    _perform_maintenance()
+    client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
+    _enforce_endpoint_rate_limits(
+        endpoint_name="jobs",
+        ip_policy=RateLimitPolicy(
+            name="jobs:ip",
+            limit=settings.job_poll_rate_limit_per_ip,
+            window_seconds=settings.job_poll_rate_limit_window_seconds,
+        ),
+        user_policy=RateLimitPolicy(
+            name="jobs:user",
+            limit=settings.job_poll_rate_limit_per_user,
+            window_seconds=settings.job_poll_rate_limit_window_seconds,
+        ),
+        client_ip=client_ip,
+        user=user,
+    )
     job_id = str(job_id)
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    return jobs[job_id]
+    if jobs[job_id]["owner_user_id"] != user.user_id:
+        logger.warning(f"Rejected access to foreign job {job_id}")
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _public_job_payload(jobs[job_id])
 
 
 if __name__ == "__main__":
