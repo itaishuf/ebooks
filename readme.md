@@ -39,6 +39,27 @@ cp .env.example .env
 nano .env
 ```
 
+   ### Supabase Google OAuth
+
+Sign-in uses Google OAuth via Supabase Auth. Before deploying you must configure the provider in both Google Cloud and the Supabase dashboard.
+
+#### 1. Create a Google OAuth client
+
+1. Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials) and create an **OAuth 2.0 Client ID** (Application type: **Web application**).
+2. Under **Authorized JavaScript origins**, add your app origin(s), for example:
+   - `https://itai-books.<tailnet>.ts.net` (Tailscale Funnel public URL)
+   - `http://localhost:19191` (local development, if needed)
+3. Under **Authorized redirect URIs**, add the Supabase callback URL shown in the Supabase dashboard:
+   - `https://<your-project-ref>.supabase.co/auth/v1/callback`
+4. Save. Google gives you a **Client ID** and **Client Secret**.
+
+#### 2. Enable the provider in Supabase
+
+1. In your Supabase project go to **Authentication → Providers → Google**.
+2. Enable the provider and paste the **Client ID** and **Client Secret** from step 1.
+3. Leave **Skip nonce checks** and **Allow users without an email** both off.
+4. Save the provider config.
+
 ### Gmail Configuration
 
 In your Google account, [create an App Password](https://myaccount.google.com/apppasswords) and store it as the password of the `Ebookarr` item in your Bitwarden vault.

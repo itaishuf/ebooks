@@ -335,6 +335,45 @@
       box-shadow: 0 2px 8px rgba(197, 106, 42, 0.15);
     }
 
+    .btn-google {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.65rem;
+      background: rgba(255, 255, 255, 0.7);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 50px;
+      padding: 0.85rem 1.5rem;
+      font-family: var(--font-body);
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      box-shadow: 0 3px 14px rgba(91, 58, 41, 0.1);
+      transition: box-shadow 0.3s, transform 0.2s, background 0.2s;
+      margin-top: 0.5rem;
+      width: 100%;
+    }
+
+    .btn-google:hover {
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 6px 22px rgba(91, 58, 41, 0.16);
+      transform: translateY(-1px);
+    }
+
+    .btn-google:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-google svg {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+
     /* ── Center Content ── */
 
     .content {
@@ -981,37 +1020,26 @@
           <template x-if="!isSignedIn()">
             <div>
               <div class="auth-card-header">
-                <span class="auth-eyebrow">Magic Link Access</span>
-                <h2 class="auth-card-title" x-text="authState === 'sending_link' ? 'Check your inbox' : 'Sign in to browse'"></h2>
-                <p class="auth-card-copy" x-show="authState !== 'sending_link'">Enter your email and we will send a one-tap sign-in link. New readers can use the same flow.</p>
-                <p class="auth-card-copy" x-show="authState === 'sending_link'">Open the email on this device, tap the link, and this page will restore your session automatically.</p>
+                <span class="auth-eyebrow">Reader Access</span>
+                <h2 class="auth-card-title">Sign in to browse</h2>
+                <p class="auth-card-copy">Use your Google account for instant, one-tap access. New readers are set up automatically.</p>
               </div>
 
-              <div class="field" x-show="authState !== 'sending_link'">
-                <label for="auth-email">Account email</label>
-                <input id="auth-email"
-                       type="email"
-                       x-model="authEmail"
-                       placeholder="reader@example.com"
-                       autocomplete="email"
-                       @keydown.enter.prevent="sendMagicLink()"
-                       :disabled="isAuthBusy()">
-              </div>
-
-              <button class="btn-primary"
+              <button class="btn-google"
                       type="button"
-                      @click="sendMagicLink()"
-                      :disabled="!canSendMagicLink()">
+                      @click="signInWithGoogle()"
+                      :disabled="isAuthBusy()">
+                <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
                 <span x-text="authButtonLabel()"></span>
               </button>
 
-              <div class="auth-actions" x-show="authState === 'sending_link'">
-                <button class="btn-secondary" type="button" @click="sendMagicLink()" :disabled="isAuthBusy()">Resend link</button>
-                <button class="btn-secondary" type="button" @click="useDifferentEmail()" :disabled="isAuthBusy()">Use different email</button>
-              </div>
-
               <p class="auth-hint" x-show="authState === 'session_boot' || authState === 'signing_in'">
-                Restoring your last session and checking for a fresh magic-link sign-in.
+                Restoring your last session…
               </p>
               <p x-show="authMessage" x-text="authMessage" class="auth-note"></p>
               <p x-show="authError" x-text="authError" class="auth-error"></p>
@@ -1040,7 +1068,7 @@
                 :disabled="!query.trim() || !kindleMail || searching || !canUseProtectedActions()">
           <span x-text="searchButtonLabel()"></span>
         </button>
-        <p class="auth-hint" x-show="!isSignedIn()">Sign in first to search, start downloads, and track your jobs.</p>
+        <p class="auth-hint" x-show="!isSignedIn()">Sign in with Google first to search, start downloads, and track your jobs.</p>
       </div>
     </aside>
 
@@ -1062,7 +1090,7 @@
             </svg>
           </button>
           <h2>Find your next book</h2>
-          <p x-text="isSignedIn() ? 'Search by title or paste a Goodreads URL to discover and send ebooks to your Kindle.' : 'Sign in with a magic link, then search by title or paste a Goodreads URL to send ebooks to your Kindle.'"></p>
+          <p x-text="isSignedIn() ? 'Search by title or paste a Goodreads URL to discover and send ebooks to your Kindle.' : 'Sign in with Google, then search by title or paste a Goodreads URL to send ebooks to your Kindle.'"></p>
           <p class="mobile-sheet-hint">Tap the book to open the search fields</p>
         </div>
       </template>
@@ -1234,8 +1262,8 @@
       const errorDescription = fromSearch.get('error_description') || fromHash.get('error_description');
 
       if (!errorCode && !errorDescription) return '';
-      if (errorCode === 'otp_expired') {
-        return 'That magic link has already been used or expired. Request a fresh link and open it only once.';
+      if (errorCode === 'access_denied') {
+        return 'Sign-in was cancelled. Try again when ready.';
       }
       return errorDescription || 'Authentication was cancelled or could not be completed.';
     }
@@ -1244,7 +1272,6 @@
       return {
         query: '',
         kindleMail: localStorage.getItem('kindle_mail') || '',
-        authEmail: '',
         authState: 'session_boot',
         authError: '',
         authMessage: '',
@@ -1287,15 +1314,10 @@
           return this.isSignedIn();
         },
 
-        canSendMagicLink() {
-          return !!this.authEmail.trim() && !this.isAuthBusy();
-        },
-
         authButtonLabel() {
           if (this.authState === 'session_boot') return 'Preparing sign-in...';
           if (this.authState === 'signing_in') return 'Signing you in...';
-          if (this.authState === 'sending_link') return 'Send another link';
-          return 'Email me a magic link';
+          return 'Continue with Google';
         },
 
         searchButtonLabel() {
@@ -1316,7 +1338,7 @@
 
         openSearchPanel() {
           this.sidebarOpen = true;
-          const focusTarget = this.isSignedIn() ? 'query' : 'auth-email';
+          const focusTarget = 'query';
           this.$nextTick(() => document.getElementById(focusTarget)?.focus());
         },
 
@@ -1362,7 +1384,7 @@
                   persistSession: true,
                   autoRefreshToken: true,
                   detectSessionInUrl: true,
-                  flowType: 'implicit',
+                  flowType: 'pkce',
                 },
               }
             );
@@ -1388,10 +1410,8 @@
 
         applySession(session) {
           if (!session || !session.user) {
-            if (this.authState !== 'sending_link') {
-              this.currentUser = null;
-              this.authState = 'signed_out';
-            }
+            this.currentUser = null;
+            this.authState = 'signed_out';
             return;
           }
 
@@ -1399,40 +1419,27 @@
             id: session.user.id,
             email: session.user.email || '',
           };
-          this.authEmail = session.user.email || this.authEmail;
           this.authState = 'signed_in';
           this.authError = '';
           this.authMessage = '';
         },
 
-        useDifferentEmail() {
-          this.authState = 'signed_out';
-          this.authMessage = '';
-          this.authError = '';
-          this.$nextTick(() => document.getElementById('auth-email')?.focus());
-        },
+        async signInWithGoogle() {
+          if (this.isAuthBusy() || !this.supabase) return;
 
-        async sendMagicLink() {
-          if (!this.canSendMagicLink() || !this.supabase) return;
-
-          const email = this.authEmail.trim();
           this.authError = '';
           this.authMessage = '';
 
           try {
-            const { error } = await this.supabase.auth.signInWithOtp({
-              email,
+            const { error } = await this.supabase.auth.signInWithOAuth({
+              provider: 'google',
               options: {
-                emailRedirectTo: `${window.location.origin}${window.location.pathname}`,
-                shouldCreateUser: true,
+                redirectTo: `${window.location.origin}${window.location.pathname}`,
               },
             });
             if (error) throw error;
-            this.authState = 'sending_link';
-            this.authMessage = `Magic link sent to ${email}.`;
           } catch (e) {
-            this.authState = 'signed_out';
-            this.authError = e?.message || 'Unable to send magic link.';
+            this.authError = e?.message || 'Unable to start Google sign-in.';
           }
         },
 

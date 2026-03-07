@@ -64,11 +64,11 @@ class Settings(BaseSettings):
     job_poll_rate_limit_per_ip: int = 120
     job_poll_rate_limit_per_user: int = 240
     job_poll_rate_limit_window_seconds: int = 60
-    max_concurrent_download_jobs: int = 2
+    max_concurrent_download_jobs: int = 5
     max_in_flight_jobs: int = 8
     max_queued_jobs: int = 6
-    max_jobs_per_user: int = 2
-    max_jobs_per_ip: int = 3
+    max_jobs_per_user: int = 5
+    max_jobs_per_ip: int = 5
     overload_retry_after_seconds: int = 30
 
     # Libgen mirrors
