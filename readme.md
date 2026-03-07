@@ -16,7 +16,7 @@ iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 ### Shortcut
 
 1. Download the 'Actions' app on your iPhone
-2. Change the Host to your server's Tailscale IP address (the endpoint is `/download`)
+2. Change the Host to your Ebookarr endpoint (for example the host Tailscale IP, or the `itai-books.<tailnet>.ts.net` name when using the Docker Compose + Tailscale deployment below). The endpoint path is `/download`.
 3. Enter your Kindle email address
 
 ### Bitwarden
@@ -166,20 +166,98 @@ cd /opt/ebookarr
 uv run service.py
 ```
 
-### Server (Docker)
+### Server (Docker Compose + Tailscale)
+
+This deployment adds a dedicated Tailscale sidecar node named `itai-books`. That gives Ebookarr its own tailnet identity, so Funnel uses the container node name instead of your host machine name.
+
+#### 1. Create the app bootstrap env file
 
 ```bash
 cp .env.example .env
 nano .env
-docker build -t ebookarr .
-docker run -d --name ebookarr --env-file .env -p 19191:19191 ebookarr
 ```
 
-For Docker, use the same minimal `.env` bootstrap pattern and let Bitwarden provide `GMAIL_PASSWORD` and `API_KEY` at runtime.
+Keep this file minimal and only set:
 
-### Tailscale
+```dotenv
+BW_CLIENT_ID=...
+BW_CLIENT_SECRET=...
+BW_MASTER_PASSWORD=...
+```
 
-The server binds to `0.0.0.0:19191` by default. Access it via your Tailscale network using the machine's Tailscale IP.
+#### 2. Create the Tailscale auth env file
+
+```bash
+cp .tailscale.env.example .tailscale.env
+nano .tailscale.env
+```
+
+Set:
+
+```dotenv
+TS_AUTHKEY=tskey-auth-...
+```
+
+This file is kept separate from `.env` so the Tailscale container receives only Tailscale credentials, while the app container receives only the Bitwarden bootstrap settings it actually needs.
+
+Use a reusable auth key if you want the `tailscale-state` volume to survive container recreation cleanly.
+
+#### 3. Start the stack
+
+```bash
+docker compose up -d --build
+```
+
+The Compose stack does the following:
+
+- builds Ebookarr from the included `Dockerfile`
+- installs Firefox and Bitwarden CLI inside the app container
+- runs the app with plain Python instead of `uv` at runtime
+- stores downloads and logs in the `ebookarr-data` volume
+- stores Tailscale node state in the `tailscale-state` volume
+- joins your tailnet as a separate node named `itai-books`
+- enables Funnel automatically against the app port defined in `docker-compose.yml`
+
+#### 4. Configure the app port in Compose
+
+The deployment port lives in `docker-compose.yml`, not in the image. Both the app and the Funnel bootstrap script read the same Compose-defined value:
+
+```yaml
+x-ebookarr-port: &ebookarr_port "19191"
+```
+
+If you want a different internal app port, change that anchor in `docker-compose.yml` and redeploy.
+
+#### 5. Verify Funnel and the node name
+
+To inspect the node and confirm its MagicDNS name:
+
+```bash
+docker compose exec tailscale tailscale status --self
+docker compose exec tailscale tailscale funnel status
+```
+
+The resulting public HTTPS URL will be the `itai-books` node on your tailnet, typically:
+
+```text
+https://itai-books.<tailnet>.ts.net
+```
+
+That keeps the public URL tied to the `itai-books` node instead of your host's Tailscale hostname.
+
+#### 6. Logs and health endpoint
+
+```bash
+docker compose logs -f ebookarr
+docker compose exec ebookarr sh -c 'curl -fsS "http://127.0.0.1:${PORT}/health"'
+```
+
+Compose overrides these app paths:
+
+- `DOWNLOAD_DIR=/data/downloads`
+- `LOG_PATH=/data/books.log`
+
+Do not store `GMAIL_PASSWORD` or `API_KEY` in `.env`. The app still fetches those from Bitwarden at startup.
 
 ## Configuration
 

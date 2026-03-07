@@ -1,0 +1,39 @@
+x-ebookarr-port: &ebookarr_port "19191"
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    hostname: itai-books
+    entrypoint: ["/bin/sh", "/config/bootstrap.sh"]
+    env_file:
+      - .tailscale.env
+    environment:
+      FUNNEL_TARGET_PORT: *ebookarr_port
+      TS_AUTH_ONCE: "true"
+      TS_HOSTNAME: itai-books
+      TS_STATE_DIR: /var/lib/tailscale
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    restart: unless-stopped
+
+  ebookarr:
+    build:
+      context: .
+    depends_on:
+      tailscale:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      DOWNLOAD_DIR: /data/downloads
+      LOG_PATH: /data/books.log
+      PORT: *ebookarr_port
+    volumes:
+      - ebookarr-data:/data
+    network_mode: service:tailscale
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
+  ebookarr-data:
