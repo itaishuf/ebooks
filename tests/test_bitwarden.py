@@ -12,11 +12,16 @@ from exceptions import BitwardenError
 def test_bw_login_success(mock_run):
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
     mock_settings = MagicMock()
+    mock_settings.bw_server_url = "https://vault.example.com/"
     mock_settings.bw_client_id = "test-id"
     mock_settings.bw_client_secret = "test-secret"
     bw_login(mock_settings)
-    assert mock_run.call_count == 2
-    login_call = mock_run.call_args_list[1]
+    assert mock_run.call_count == 3
+    logout_call = mock_run.call_args_list[0]
+    assert logout_call[0][0] == ["bw", "logout"]
+    config_call = mock_run.call_args_list[1]
+    assert config_call[0][0] == ["bw", "config", "server", "https://vault.example.com/"]
+    login_call = mock_run.call_args_list[2]
     assert login_call[0][0] == ["bw", "login", "--apikey"]
     env_passed = login_call[1]["env"]
     assert env_passed["BW_CLIENTID"] == "test-id"
@@ -26,6 +31,7 @@ def test_bw_login_success(mock_run):
 @patch("bitwarden.subprocess.run")
 def test_bw_login_cli_not_found(mock_run):
     mock_settings = MagicMock()
+    mock_settings.bw_server_url = "https://vault.example.com/"
     mock_settings.bw_client_id = ""
     mock_settings.bw_client_secret = ""
     mock_run.side_effect = FileNotFoundError()
@@ -36,6 +42,7 @@ def test_bw_login_cli_not_found(mock_run):
 @patch("bitwarden.subprocess.run")
 def test_bw_login_failure(mock_run):
     mock_settings = MagicMock()
+    mock_settings.bw_server_url = "https://vault.example.com/"
     mock_settings.bw_client_id = ""
     mock_settings.bw_client_secret = ""
     mock_run.side_effect = subprocess.CalledProcessError(1, "bw", stderr="bad credentials")

@@ -52,6 +52,8 @@ def bw_login(settings: Settings) -> None:
         _run_bw("logout")
     except BitwardenError:
         pass  # not logged in — that's fine
+    logger.info(f"Configuring Bitwarden server to {settings.bw_server_url}")
+    _run_bw("config", "server", settings.bw_server_url)
     _run_bw("login", "--apikey", extra_env={
         "BW_CLIENTID": settings.bw_client_id,
         "BW_CLIENTSECRET": settings.bw_client_secret,

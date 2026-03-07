@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     selenium_click_attempts: int = 3
 
     # Bitwarden bootstrap credentials (typically provided by a minimal .env)
+    bw_server_url: str = "https://vault.zorilla-iguana.ts.net/"
     bw_client_id: str = ""
     bw_client_secret: str = ""
     bw_master_password: str = ""
