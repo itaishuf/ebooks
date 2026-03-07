@@ -21,7 +21,7 @@ iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 
 ### Bitwarden
 
-All application secrets are fetched from a Bitwarden vault at startup. No plaintext secrets are stored in `.env`.
+Application secrets are fetched from a Bitwarden vault at startup. In production, `.env` is only a minimal bootstrap file for the Bitwarden CLI credentials.
 
 1. [Install the Bitwarden CLI](https://bitwarden.com/help/cli/)
 2. [Generate a personal API key](https://bitwarden.com/help/personal-api-key/) from your web vault (Account Settings > Security > Keys > API Key)
@@ -32,7 +32,7 @@ All application secrets are fetched from a Bitwarden vault at startup. No plaint
 | `Ebookarr` | Gmail app password |
 | `Ebookarr API Key` | Server API key for endpoint auth |
 
-4. Copy `.env.example` to `.env` and fill in your Bitwarden credentials:
+4. Copy `.env.example` to `.env` and fill in only your Bitwarden bootstrap credentials:
 
 ```bash
 cp .env.example .env
@@ -99,14 +99,24 @@ sudo -u ebookarr uv sync --project /opt/ebookarr
 
 This creates a `.venv` inside `/opt/ebookarr` and installs all dependencies from `pyproject.toml`.
 
-#### 5. Configure the `.env` file
+#### 5. Configure the bootstrap `.env` file
 
 ```bash
 sudo cp /opt/ebookarr/.env.example /opt/ebookarr/.env
-sudo nano /opt/ebookarr/.env          # fill in your values
+sudo nano /opt/ebookarr/.env          # add only the BW_* values
 sudo chown ebookarr:ebookarr /opt/ebookarr/.env
-sudo chmod 600 /opt/ebookarr/.env     # secrets — readable only by ebookarr
+sudo chmod 600 /opt/ebookarr/.env     # contains the Bitwarden master password
 ```
+
+Keep this file minimal in production:
+
+```dotenv
+BW_CLIENT_ID=...
+BW_CLIENT_SECRET=...
+BW_MASTER_PASSWORD=...
+```
+
+Do not store `GMAIL_PASSWORD` or `API_KEY` in this file. Those are loaded from Bitwarden at startup.
 
 #### 6. Make sure the Bitwarden CLI is in the service's `PATH`
 
@@ -142,8 +152,9 @@ No API key required. Use this URL in your monitoring setup to confirm the servic
 If the service fails to start, common causes are:
 
 - **Bitwarden CLI not found** — check the `PATH` in the service unit (step 6).
-- **Wrong file permissions** — the `ebookarr` user must own `/opt/ebookarr` and be able to read `.env`.
+- **Wrong file permissions** — the `ebookarr` user must own `/opt/ebookarr` and be able to read the bootstrap `.env`.
 - **Bitwarden login failure** — run `sudo -u ebookarr env $(cat /opt/ebookarr/.env | xargs) bw login --apikey` to test credentials interactively.
+- **Missing Bitwarden items** — make sure the `Ebookarr` and `Ebookarr API Key` items exist in your vault.
 - **Missing Python packages** — make sure you ran `uv sync` in `/opt/ebookarr` (step 4).
 
 #### Running without systemd
@@ -164,26 +175,48 @@ docker build -t ebookarr .
 docker run -d --name ebookarr --env-file .env -p 19191:19191 ebookarr
 ```
 
+For Docker, use the same minimal `.env` bootstrap pattern and let Bitwarden provide `GMAIL_PASSWORD` and `API_KEY` at runtime.
+
 ### Tailscale
 
 The server binds to `0.0.0.0:19191` by default. Access it via your Tailscale network using the machine's Tailscale IP.
 
 ## Configuration
 
-All configuration is managed via a `.env` file (see `.env.example`):
+Production configuration uses three layers:
+
+1. `config.py` defaults for normal non-secret settings
+2. Optional environment overrides when you need host-specific behavior
+3. Bitwarden for runtime application secrets
+
+The production `.env` file is intentionally minimal and only bootstraps Bitwarden:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `BW_CLIENT_ID` | Yes | - | Bitwarden personal API key client ID |
 | `BW_CLIENT_SECRET` | Yes | - | Bitwarden personal API key client secret |
 | `BW_MASTER_PASSWORD` | Yes | - | Bitwarden master password (for vault unlock) |
-| `GMAIL_ACCOUNT` | Yes | - | Gmail address for sending books |
-| `PORT` | No | 19191 | Server port |
-| `HOST` | No | 0.0.0.0 | Bind address |
-| `DOWNLOAD_DIR` | No | /tmp/ebooks | Selenium download directory |
-| `LOG_PATH` | No | ./books.log | Log file path |
 
-Secrets (`GMAIL_PASSWORD`, `API_KEY`) are fetched from Bitwarden at startup and are never stored on disk.
+Defaults in `config.py` cover:
+
+| Setting | Default |
+|---|---|
+| `GMAIL_ACCOUNT` | `itaishuf@gmail.com` |
+| `PORT` | `19191` |
+| `HOST` | `0.0.0.0` |
+| `DOWNLOAD_DIR` | `/tmp/ebooks` |
+| `LOG_PATH` | `./books.log` |
+| `TEST_GOODREADS_URL` | empty |
+| `TEST_KINDLE_EMAIL` | empty |
+
+Runtime secrets are fetched from Bitwarden at startup and should not be stored on disk:
+
+| Secret | Bitwarden Item |
+|---|---|
+| `GMAIL_PASSWORD` | `Ebookarr` |
+| `API_KEY` | `Ebookarr API Key` |
+
+For local development and E2E tests, you can still override non-secret settings or test-only values with environment variables if needed.
 
 ## Development
 

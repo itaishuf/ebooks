@@ -105,6 +105,37 @@ def test_bw_get_item_password_invalid_json(mock_run):
 @patch("bitwarden.bw_get_item_password")
 @patch("bitwarden.bw_unlock", return_value="session-key")
 @patch("bitwarden.bw_login")
+def test_fetch_secrets_uses_bitwarden_with_bootstrap_credentials(
+    mock_login, mock_unlock, mock_get, mock_lock
+):
+    mock_get.side_effect = lambda session, title: {
+        "Ebookarr": "gmail-pass",
+        "Ebookarr API Key": "api-key-123",
+    }[title]
+
+    mock_settings = MagicMock()
+    mock_settings.bw_client_id = "client-id"
+    mock_settings.bw_client_secret = "client-secret"
+    mock_settings.bw_master_password = "master-password"
+    mock_settings.gmail_password_bw_item_title = "Ebookarr"
+    mock_settings.api_key_bw_item_title = "Ebookarr API Key"
+    mock_settings.gmail_password = ""
+    mock_settings.api_key = ""
+
+    fetch_secrets(mock_settings)
+
+    mock_login.assert_called_once_with(mock_settings)
+    mock_unlock.assert_called_once_with(mock_settings)
+    assert mock_get.call_count == 2
+    assert mock_settings.gmail_password == "gmail-pass"
+    assert mock_settings.api_key == "api-key-123"
+    mock_lock.assert_called_once()
+
+
+@patch("bitwarden.bw_lock")
+@patch("bitwarden.bw_get_item_password")
+@patch("bitwarden.bw_unlock", return_value="session-key")
+@patch("bitwarden.bw_login")
 def test_fetch_secrets_populates_settings(mock_login, mock_unlock, mock_get, mock_lock):
     mock_get.side_effect = lambda session, title: {
         "Ebookarr": "gmail-pass",
@@ -145,7 +176,7 @@ def test_fetch_secrets_locks_vault_on_failure(mock_login, mock_unlock, mock_get,
 @patch("bitwarden.bw_get_item_password")
 @patch("bitwarden.bw_unlock", return_value="session-key")
 @patch("bitwarden.bw_login")
-def test_fetch_secrets_skips_bitwarden_when_env_has_all_secrets(
+def test_fetch_secrets_skips_bitwarden_when_runtime_secrets_are_already_loaded(
     mock_login, mock_unlock, mock_get, mock_lock
 ):
     mock_settings = MagicMock()

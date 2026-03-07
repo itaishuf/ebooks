@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import tempfile
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -17,7 +18,7 @@ from selenium.webdriver.firefox.options import Options
 
 from config import settings
 from exceptions import BookNotFoundError, DownloadError, ManualDownloadRequiredError
-from utils import find_newest_file_in_downloads, log_call
+from utils import log_call
 
 logger = logging.getLogger(__name__)
 DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
@@ -75,8 +76,10 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
 
 @log_call
 def download_book_using_selenium(url: str) -> Path:
-    download_dir = Path(settings.download_dir).resolve()
-    download_dir.mkdir(parents=True, exist_ok=True)
+    base_download_dir = Path(settings.download_dir).resolve()
+    base_download_dir.mkdir(parents=True, exist_ok=True)
+    # Isolate each Selenium session so concurrent jobs never inspect each other's artifacts.
+    download_dir = Path(tempfile.mkdtemp(prefix="selenium-", dir=base_download_dir))
 
     options = Options()
     options.add_argument("--headless")
@@ -89,7 +92,8 @@ def download_book_using_selenium(url: str) -> Path:
     options.set_preference("pdfjs.disabled", True)
 
     logger.info(
-        f"Starting Selenium download for {url} with download_dir={download_dir}, "
+        f"Starting Selenium download for {url} with base_download_dir={base_download_dir}, "
+        f"session_download_dir={download_dir}, "
         f"headless=True, click_attempts={settings.selenium_click_attempts}"
     )
 
@@ -109,11 +113,14 @@ def download_book_using_selenium(url: str) -> Path:
             book_path = _wait_for_download(download_dir, attempt_started_at, url, page_attempt + 1)
             if book_path:
                 time.sleep(DOWNLOAD_POLL_INTERVAL_SECONDS)
-                logger.info(f"Selenium download completed for {url}: {book_path}")
+                logger.info(
+                    f"Selenium download completed for {url}: {book_path} "
+                    f"(session_download_dir={download_dir})"
+                )
                 return book_path
 
             logger.warning(
-                f"No new download artifact detected for {url} after page attempt "
+                f"No completed download artifact detected for {url} after page attempt "
                 f"{page_attempt + 1}/{DOWNLOAD_RECLICK_ATTEMPTS}"
             )
             if page_attempt < DOWNLOAD_RECLICK_ATTEMPTS - 1:
@@ -158,13 +165,20 @@ def _click_download_button(driver: webdriver.Firefox, button_xpath: str, url: st
 def _wait_for_download(download_dir: Path, since: float, url: str, page_attempt: int) -> Path | None:
     for poll_attempt in range(DOWNLOAD_POLL_ATTEMPTS):
         try:
-            book_path = find_newest_file_in_downloads(since=since)
+            candidates = _find_download_candidates(download_dir, since)
+            book_path = candidates[0]
             logger.info(
                 f"Detected download candidate for {url} on page attempt {page_attempt}, "
                 f"poll attempt {poll_attempt + 1}/{DOWNLOAD_POLL_ATTEMPTS}: {book_path.name}"
             )
-            if book_path.suffix != '.part':
-                return book_path
+            completed_candidates = [candidate for candidate in candidates if candidate.suffix != '.part']
+            if completed_candidates:
+                completed_path = completed_candidates[0]
+                logger.info(
+                    f"Detected completed download for {url} on page attempt {page_attempt}, "
+                    f"poll attempt {poll_attempt + 1}/{DOWNLOAD_POLL_ATTEMPTS}: {completed_path.name}"
+                )
+                return completed_path
             logger.info(
                 f"Download for {url} is still partial on page attempt {page_attempt}: "
                 f"{book_path.name}"
@@ -180,6 +194,22 @@ def _wait_for_download(download_dir: Path, since: float, url: str, page_attempt:
         )
         time.sleep(DOWNLOAD_POLL_INTERVAL_SECONDS)
     return None
+
+
+def _find_download_candidates(download_dir: Path, since: float) -> list[Path]:
+    try:
+        files = [path for path in download_dir.iterdir() if path.is_file()]
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Download directory {download_dir} does not exist") from e
+
+    candidates = [path for path in files if path.stat().st_mtime >= since]
+    if not candidates:
+        raise FileNotFoundError(
+            f"No new file detected in isolated download directory {download_dir} after Selenium click"
+        )
+
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates
 
 
 def _log_download_dir_state(download_dir: Path, label: str) -> None:

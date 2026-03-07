@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -38,31 +39,33 @@ class _FakeDriver:
 
 def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_path):
     driver = _FakeDriver()
-    result_path = tmp_path / "book.epub"
-    calls = {"count": 0}
+    wait_calls = []
 
     monkeypatch.setattr(download_with_libgen.settings, "download_dir", str(tmp_path))
     monkeypatch.setattr(download_with_libgen.webdriver, "Firefox", lambda options=None: driver)
     monkeypatch.setattr(download_with_libgen.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(download_with_libgen, "_click_download_button", lambda *_args: None)
 
-    def fake_find_newest_file_in_downloads(since=None):
+    def fake_wait_for_download(download_dir, since, url, page_attempt):
         assert since is not None
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise FileNotFoundError("No new file detected after Selenium click")
+        wait_calls.append((download_dir, url, page_attempt))
+        if len(wait_calls) == 1:
+            return None
+        result_path = download_dir / "book.epub"
+        result_path.write_bytes(b"downloaded")
         return result_path
 
-    monkeypatch.setattr(
-        download_with_libgen,
-        "find_newest_file_in_downloads",
-        fake_find_newest_file_in_downloads,
-    )
+    monkeypatch.setattr(download_with_libgen, "_wait_for_download", fake_wait_for_download)
 
     book_path = download_with_libgen.download_book_using_selenium("https://libgen.test/get.php?md5=abc")
 
-    assert book_path == result_path
+    assert book_path.name == "book.epub"
+    assert book_path.parent.parent == tmp_path
+    assert book_path.parent.name.startswith("selenium-")
     assert driver.quit_called is True
-    assert calls["count"] == 2
+    assert len(wait_calls) == 2
+    assert wait_calls[0][0] == wait_calls[1][0]
+    assert wait_calls[0][0] != tmp_path
 
 
 def test_download_book_using_selenium_raises_manual_fallback(monkeypatch, tmp_path):
@@ -71,11 +74,8 @@ def test_download_book_using_selenium_raises_manual_fallback(monkeypatch, tmp_pa
     monkeypatch.setattr(download_with_libgen.settings, "download_dir", str(tmp_path))
     monkeypatch.setattr(download_with_libgen.webdriver, "Firefox", lambda options=None: driver)
     monkeypatch.setattr(download_with_libgen.time, "sleep", lambda _seconds: None)
-    monkeypatch.setattr(
-        download_with_libgen,
-        "find_newest_file_in_downloads",
-        lambda since=None: (_ for _ in ()).throw(FileNotFoundError("No new file detected after Selenium click")),
-    )
+    monkeypatch.setattr(download_with_libgen, "_click_download_button", lambda *_args: None)
+    monkeypatch.setattr(download_with_libgen, "_wait_for_download", lambda *_args: None)
 
     with pytest.raises(ManualDownloadRequiredError) as exc:
         download_with_libgen.download_book_using_selenium("https://libgen.test/get.php?md5=def")
@@ -83,6 +83,51 @@ def test_download_book_using_selenium_raises_manual_fallback(monkeypatch, tmp_pa
     assert "Selenium never detected a new downloaded file" in str(exc.value)
     assert exc.value.fallback_url == "https://libgen.test/get.php?md5=def"
     assert driver.quit_called is True
+
+
+def test_wait_for_download_returns_completed_file_when_part_is_newer(monkeypatch, tmp_path):
+    monkeypatch.setattr(download_with_libgen.time, "sleep", lambda _seconds: None)
+    download_dir = tmp_path / "selenium-job"
+    download_dir.mkdir()
+
+    completed_path = download_dir / "book.epub"
+    completed_path.write_bytes(b"finished")
+    partial_path = download_dir / "book.epub.part"
+    partial_path.write_bytes(b"partial")
+    os.utime(completed_path, (100.0, 100.0))
+    os.utime(partial_path, (200.0, 200.0))
+
+    result = download_with_libgen._wait_for_download(
+        download_dir,
+        50.0,
+        "https://libgen.test/get.php?md5=ghi",
+        1,
+    )
+
+    assert result == completed_path
+
+
+def test_wait_for_download_ignores_files_outside_session_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr(download_with_libgen.time, "sleep", lambda _seconds: None)
+    parent_download_dir = tmp_path
+    session_download_dir = parent_download_dir / "selenium-job"
+    session_download_dir.mkdir()
+
+    unrelated_root_file = parent_download_dir / "other-job.pdf"
+    unrelated_root_file.write_bytes(b"other job")
+    os.utime(unrelated_root_file, (300.0, 300.0))
+    completed_path = session_download_dir / "book.epub"
+    completed_path.write_bytes(b"finished")
+    os.utime(completed_path, (200.0, 200.0))
+
+    result = download_with_libgen._wait_for_download(
+        session_download_dir,
+        50.0,
+        "https://libgen.test/get.php?md5=jkl",
+        1,
+    )
+
+    assert result == completed_path
 
 
 @pytest.mark.asyncio

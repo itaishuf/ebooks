@@ -67,7 +67,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             f"\n  Bitwarden error: {exc}\n\n"
             "  Ebookarr could not fetch secrets from Bitwarden.\n"
             "  To fix this, either:\n"
-            "    1. Add the missing secrets directly to .env\n"
+            "    1. Verify the bootstrap Bitwarden credentials are set in the "
+            "environment or minimal .env\n"
             "    2. Create the missing item in your Bitwarden vault\n"
         ) from None
     if not settings.api_key:

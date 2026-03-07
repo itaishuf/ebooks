@@ -2,6 +2,9 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    # Production keeps a minimal .env only for Bitwarden bootstrap credentials.
+    # Everything else should use config defaults, explicit env overrides, or
+    # runtime secrets fetched from Bitwarden at startup.
     model_config = {"env_file": ".env"}
 
     # Server
@@ -50,16 +53,16 @@ class Settings(BaseSettings):
     selenium_download_timeout_minutes: int = 10
     selenium_click_attempts: int = 3
 
-    # Bitwarden credentials (loaded from .env)
+    # Bitwarden bootstrap credentials (typically provided by a minimal .env)
     bw_client_id: str = ""
     bw_client_secret: str = ""
     bw_master_password: str = ""
 
-    # Runtime secrets (populated from Bitwarden at startup)
+    # Runtime application secrets (populated from Bitwarden at startup)
     gmail_password: str = ""
     api_key: str = ""
 
-    # Test configuration
+    # Local development / E2E test configuration
     test_goodreads_url: str = ""
     test_kindle_email: str = ""
 
