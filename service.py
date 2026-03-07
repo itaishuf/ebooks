@@ -2,6 +2,7 @@ import asyncio
 import contextvars
 import logging
 import time
+import zoneinfo
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -48,6 +49,16 @@ current_user_id: contextvars.ContextVar[str] = contextvars.ContextVar("current_u
 log_path = Path(settings.log_path)
 log_path.parent.mkdir(parents=True, exist_ok=True)
 
+_TZ = zoneinfo.ZoneInfo("Asia/Jerusalem")
+
+
+class _TZFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=_TZ)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S") + f",{record.msecs:03.0f}"
+
 
 class _RequestContextFilter(logging.Filter):
     def filter(self, record):
@@ -63,7 +74,7 @@ _log_format = (
     'job=%(job_id)s, user=%(user_id)s, "%(message)s"'
 )
 _handler = RotatingFileHandler(str(log_path), maxBytes=5 * 1024 * 1024, backupCount=3)
-_handler.setFormatter(logging.Formatter(_log_format))
+_handler.setFormatter(_TZFormatter(_log_format))
 _handler.addFilter(_RequestContextFilter())
 
 logging.basicConfig(level=logging.DEBUG, handlers=[_handler])

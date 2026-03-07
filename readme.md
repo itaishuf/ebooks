@@ -30,7 +30,6 @@ Application secrets are fetched from a Bitwarden vault at startup. In production
 | Bitwarden Item | Password Field Contains |
 |---|---|
 | `Ebookarr` | Gmail app password |
-| `Ebookarr API Key` | Server API key for endpoint auth |
 
 4. Copy `.env.example` to `.env` and fill in only your Bitwarden bootstrap credentials:
 
@@ -137,7 +136,7 @@ BW_CLIENT_SECRET=...
 BW_MASTER_PASSWORD=...
 ```
 
-Do not store `GMAIL_PASSWORD` or `API_KEY` in this file. Those are loaded from Bitwarden at startup using the configured item IDs in `config.py`.
+Do not store `GMAIL_PASSWORD` in this file. It is loaded from Bitwarden at startup using the configured item ID in `config.py`.
 
 #### 6. Make sure the Bitwarden CLI is in the service's `PATH`
 
@@ -278,7 +277,7 @@ Compose overrides these app paths:
 - `DOWNLOAD_DIR=/data/downloads`
 - `LOG_PATH=/data/books.log`
 
-Do not store `GMAIL_PASSWORD` or `API_KEY` in `.env`. The app still fetches those from Bitwarden at startup.
+Do not store `GMAIL_PASSWORD` in `.env`. The app fetches it from Bitwarden at startup.
 
 ## Configuration
 
@@ -313,7 +312,6 @@ Runtime secrets are fetched from Bitwarden at startup and should not be stored o
 | Secret | Config Setting | Current Vault Item |
 |---|---|---|
 | `GMAIL_PASSWORD` | `gmail_password_bw_item_id` | `Ebookarr` |
-| `API_KEY` | `api_key_bw_item_id` | `Ebookarr API Key` |
 
 For local development and E2E tests, you can still override non-secret settings or test-only values with environment variables if needed.
 

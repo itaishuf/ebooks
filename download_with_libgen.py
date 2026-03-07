@@ -138,7 +138,10 @@ def download_book_using_selenium(url: str) -> Path:
     except NoSuchElementException as e:
         raise DownloadError('Failed to find book in libgen') from e
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except Exception as e:
+            logger.warning(f"driver.quit() failed, Firefox session may be orphaned: {e}")
 
 
 def _click_download_button(driver: webdriver.Firefox, button_xpath: str, url: str) -> None:

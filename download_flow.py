@@ -81,7 +81,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
     if book_path:
         with open(book_path, 'rb') as f:
             file_data = f.read()
-            file_name = f.name
+            file_name = book_path.name
     else:
         file_data = book_data
         file_name = filename

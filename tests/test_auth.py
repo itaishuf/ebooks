@@ -62,55 +62,28 @@ def test_verify_access_token_accepts_valid_token(monkeypatch, rsa_key_pair):
     assert claims["email"] == "reader@example.com"
 
 
-def test_verify_access_token_rejects_expired_token(monkeypatch, rsa_key_pair):
+@pytest.mark.parametrize(
+    ("token_overrides", "use_raw_token", "expected_error"),
+    [
+        ({"exp": int((datetime.now(timezone.utc) - timedelta(minutes=1)).timestamp())}, False, "Token expired"),
+        ({"iss": "https://attacker.example.com/auth/v1"}, False, "Invalid token issuer"),
+        ({"aud": "public"}, False, "Invalid token audience"),
+        ({}, True, "Invalid token"),
+    ],
+)
+def test_verify_access_token_rejects_bad_tokens(
+    monkeypatch, rsa_key_pair, token_overrides, use_raw_token, expected_error
+):
     private_key, public_key = rsa_key_pair
-    token = _make_token(private_key, exp=int((datetime.now(timezone.utc) - timedelta(minutes=1)).timestamp()))
+    token = "not-a-jwt" if use_raw_token else _make_token(private_key, **token_overrides)
     monkeypatch.setattr(
         auth,
         "_get_jwks_client",
         lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
     )
 
-    with pytest.raises(HTTPException, match="Token expired"):
+    with pytest.raises(HTTPException, match=expected_error):
         auth.verify_access_token(token)
-
-
-def test_verify_access_token_rejects_wrong_issuer(monkeypatch, rsa_key_pair):
-    private_key, public_key = rsa_key_pair
-    token = _make_token(private_key, iss="https://attacker.example.com/auth/v1")
-    monkeypatch.setattr(
-        auth,
-        "_get_jwks_client",
-        lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
-    )
-
-    with pytest.raises(HTTPException, match="Invalid token issuer"):
-        auth.verify_access_token(token)
-
-
-def test_verify_access_token_rejects_wrong_audience(monkeypatch, rsa_key_pair):
-    private_key, public_key = rsa_key_pair
-    token = _make_token(private_key, aud="public")
-    monkeypatch.setattr(
-        auth,
-        "_get_jwks_client",
-        lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
-    )
-
-    with pytest.raises(HTTPException, match="Invalid token audience"):
-        auth.verify_access_token(token)
-
-
-def test_verify_access_token_rejects_invalid_token(monkeypatch, rsa_key_pair):
-    _, public_key = rsa_key_pair
-    monkeypatch.setattr(
-        auth,
-        "_get_jwks_client",
-        lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
-    )
-
-    with pytest.raises(HTTPException, match="Invalid token"):
-        auth.verify_access_token("not-a-jwt")
 
 
 def test_get_current_user_requires_verified_email(monkeypatch):
@@ -128,6 +101,25 @@ def test_get_current_user_requires_verified_email(monkeypatch):
 
     with pytest.raises(HTTPException, match="Email verification required"):
         auth.get_current_user(credentials)
+
+
+def test_get_current_user_accepts_oauth_user_with_email_verified_in_user_metadata(monkeypatch):
+    """Google OAuth tokens have email_verified inside user_metadata, not at the top level."""
+    monkeypatch.setattr(
+        auth,
+        "verify_access_token",
+        lambda _token: {
+            "sub": "user-456",
+            "email": "reader@gmail.com",
+            "user_metadata": {"email_verified": True, "name": "Test User"},
+        },
+    )
+
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+    user = auth.get_current_user(credentials)
+
+    assert user.email == "reader@gmail.com"
+    assert user.email_verified is True
 
 
 def test_get_current_user_requires_authorization_header():

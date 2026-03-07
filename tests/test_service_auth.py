@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -225,3 +226,45 @@ def test_job_polling_is_rate_limited(client, monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 429
     assert second.headers["Retry-After"]
+
+
+def test_download_job_completes_and_is_pollable(client, monkeypatch):
+    """Full job lifecycle via HTTP: POST creates a queued job, background task runs to
+    completion, GET returns the done status through the public API surface.
+
+    This is the only test that exercises the on_status callback → job dict → public
+    payload projection chain end-to-end through the HTTP endpoints.
+    """
+    service.app.dependency_overrides[service.get_current_user] = _override_user("user-1")
+
+    captured_tasks = []
+
+    def capture_task(coro):
+        captured_tasks.append(coro)
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", capture_task)
+
+    async def instant_download(url, kindle_mail, on_status=None):
+        if on_status:
+            on_status("done")
+
+    monkeypatch.setattr(service, "ebook_download", instant_download)
+
+    post = client.post(
+        "/download",
+        json={"goodreads_url": "https://www.goodreads.com/book/show/4671", "kindle_mail": "reader@example.com"},
+    )
+    assert post.status_code == 200
+    job_id = post.json()["job_id"]
+    assert service.jobs[job_id]["status"] == "queued"
+
+    assert len(captured_tasks) == 1
+    asyncio.run(captured_tasks[0])
+
+    poll = client.get(f"/jobs/{job_id}")
+    assert poll.status_code == 200
+    data = poll.json()
+    assert data["status"] == "done"
+    assert data["error"] is None
+    assert data["fallback"] is None

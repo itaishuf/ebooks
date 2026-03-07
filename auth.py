@@ -78,7 +78,13 @@ def _claim_is_truthy(value: object) -> bool:
 def _is_email_verified(claims: dict) -> bool:
     if _claim_is_truthy(claims.get("email_verified")):
         return True
-    return bool(claims.get("email_confirmed_at") or claims.get("confirmed_at"))
+    if claims.get("email_confirmed_at") or claims.get("confirmed_at"):
+        return True
+    # Supabase puts email_verified inside user_metadata for OAuth providers (e.g. Google)
+    user_metadata = claims.get("user_metadata") or {}
+    if isinstance(user_metadata, dict) and _claim_is_truthy(user_metadata.get("email_verified")):
+        return True
+    return False
 
 
 def verify_access_token(token: str) -> dict:

@@ -7,8 +7,6 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from abuse_protection import (
-    RateLimitPolicy,
-    SlidingWindowRateLimiter,
     cleanup_download_artifacts,
     cleanup_expired_jobs,
     extract_client_ip,
@@ -94,13 +92,3 @@ def test_extract_client_ip_prefers_forwarded_header_from_trusted_proxy():
     assert response.json() == {"client_ip": "203.0.113.9"}
 
 
-def test_sliding_window_rate_limiter_returns_retry_after():
-    limiter = SlidingWindowRateLimiter()
-    policy = RateLimitPolicy(name="search:ip", limit=1, window_seconds=60)
-
-    first = limiter.check(policy, "ip:testclient")
-    second = limiter.check(policy, "ip:testclient")
-
-    assert first.allowed is True
-    assert second.allowed is False
-    assert second.retry_after_seconds > 0
