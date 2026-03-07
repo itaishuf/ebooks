@@ -69,7 +69,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "  To fix this, either:\n"
             "    1. Verify the bootstrap Bitwarden credentials are set in the "
             "environment or minimal .env\n"
-            "    2. Create the missing item in your Bitwarden vault\n"
+            "    2. Verify the configured Bitwarden item IDs still point to the "
+            "correct vault items\n"
         ) from None
     if not settings.api_key:
         logger.warning("API_KEY is not set — all endpoints are unauthenticated")

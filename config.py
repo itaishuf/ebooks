@@ -13,10 +13,10 @@ class Settings(BaseSettings):
 
     # Gmail
     gmail_account: str = "itaishuf@gmail.com"
-    gmail_password_bw_item_title: str = "Ebookarr"
+    gmail_password_bw_item_id: str = "d5b23dae-f723-48ac-b1da-6b155b0fbd71"
     
     # API
-    api_key_bw_item_title: str = "Ebookarr API Key"
+    api_key_bw_item_id: str = "a152a82b-672c-41e0-8ae4-fa6f0cc6f773"
     
 
     # Anna's Archive mirrors (search only, no paid API)
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     bw_client_secret: str = ""
     bw_master_password: str = ""
 
-    # Runtime application secrets (populated from Bitwarden at startup)
+    # Runtime application secrets (populated from Bitwarden item IDs at startup)
     gmail_password: str = ""
     api_key: str = ""
 

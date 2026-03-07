@@ -232,6 +232,8 @@
       align-items: center;
       justify-content: center;
       margin-bottom: 0.5rem;
+      border: none;
+      transition: transform 0.25s ease, box-shadow 0.25s ease, background 0.25s ease;
     }
 
     .welcome-icon svg {
@@ -242,6 +244,22 @@
       stroke-width: 1.5;
       stroke-linecap: round;
       stroke-linejoin: round;
+    }
+
+    .welcome-icon-button {
+      cursor: pointer;
+      box-shadow: 0 10px 28px rgba(91, 58, 41, 0.12);
+    }
+
+    .welcome-icon-button:hover {
+      transform: translateY(-2px) scale(1.02);
+      box-shadow: 0 16px 36px rgba(91, 58, 41, 0.16);
+      background: linear-gradient(135deg, rgba(197, 106, 42, 0.18), rgba(110, 134, 166, 0.18));
+    }
+
+    .welcome-icon-button:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 4px rgba(197, 106, 42, 0.15), 0 14px 30px rgba(91, 58, 41, 0.16);
     }
 
     .welcome h2 {
@@ -256,6 +274,14 @@
       font-size: 1rem;
       max-width: 320px;
       line-height: 1.6;
+    }
+
+    .mobile-sheet-hint {
+      display: none;
+      font-size: 0.8rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-light);
     }
 
     /* ── Section Label ── */
@@ -589,47 +615,48 @@
       color: var(--text);
     }
 
-    /* ── Hamburger (mobile) ── */
+    /* ── Mobile Launcher ── */
 
-    .hamburger {
+    .mobile-launcher {
       display: none;
       position: fixed;
-      top: 1rem;
-      left: 1rem;
+      left: 50%;
+      bottom: 1.1rem;
+      transform: translateX(-50%);
       z-index: 1001;
+    }
+
+    .mobile-launcher-button {
       background: rgba(250, 244, 235, 0.92);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
       border: 1px solid var(--border);
-      width: 44px;
-      height: 44px;
-      border-radius: var(--radius-sm);
+      width: 64px;
+      height: 64px;
+      border-radius: 999px;
       cursor: pointer;
+      box-shadow: 0 2px 10px rgba(91, 58, 41, 0.1);
+      transition: box-shadow 0.2s, transform 0.2s, background 0.2s;
+      padding: 0;
+      display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 2px 10px rgba(91, 58, 41, 0.1);
-      transition: box-shadow 0.2s;
-      padding: 0;
-      font-size: 0;
     }
 
-    .hamburger:hover {
-      box-shadow: 0 4px 16px rgba(91, 58, 41, 0.16);
+    .mobile-launcher-button:hover {
+      background: var(--bg-warm);
+      box-shadow: 0 10px 28px rgba(91, 58, 41, 0.16);
+      transform: translateY(-2px);
     }
 
-    .hamburger-lines {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      width: 20px;
-    }
-
-    .hamburger-lines span {
-      display: block;
-      height: 2px;
-      background: var(--umber);
-      border-radius: 2px;
-      transition: transform 0.3s, opacity 0.3s;
+    .mobile-launcher-button svg {
+      width: 28px;
+      height: 28px;
+      stroke: var(--accent);
+      fill: none;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
     .sidebar-overlay {
@@ -654,32 +681,80 @@
         grid-template-columns: 1fr;
       }
 
-      .hamburger {
+      .mobile-launcher {
         display: flex;
       }
 
       .sidebar {
         position: fixed;
-        top: 0;
+        top: auto;
+        bottom: 0;
         left: 0;
-        height: 100dvh;
-        transform: translateX(-100%);
-        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-        box-shadow: none;
-        z-index: 100;
+        right: 0;
+        width: auto;
+        height: auto;
+        max-height: min(78dvh, 560px);
+        padding: 1rem 1rem calc(1.25rem + env(safe-area-inset-bottom));
+        border-right: none;
+        border-top: 1px solid var(--border);
+        border-top-left-radius: 28px;
+        border-top-right-radius: 28px;
+        transform: translateY(100%);
+        transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.35s ease;
+        box-shadow: 0 -20px 40px rgba(91, 58, 41, 0.04);
+        z-index: 1002;
       }
 
       .sidebar.open {
-        transform: translateX(0);
-        box-shadow: 8px 0 32px rgba(91, 58, 41, 0.15);
+        transform: translateY(0);
+        box-shadow: 0 -20px 40px rgba(91, 58, 41, 0.18);
       }
 
       .sidebar-overlay.visible {
         display: block;
       }
 
+      .sidebar-header {
+        padding-top: 0.25rem;
+      }
+
+      .sidebar-header::before {
+        content: '';
+        display: block;
+        width: 52px;
+        height: 5px;
+        border-radius: 999px;
+        margin: 0 auto 1rem;
+        background: rgba(91, 58, 41, 0.16);
+      }
+
+      .sidebar-fields {
+        gap: 1rem;
+      }
+
       .content {
-        padding: 4.5rem 1.25rem 2rem;
+        padding: 2rem 1.25rem 6.25rem;
+      }
+
+      .welcome {
+        gap: 1.15rem;
+      }
+
+      .welcome-icon {
+        width: 92px;
+        height: 92px;
+      }
+
+      .welcome h2 {
+        font-size: 2.1rem;
+      }
+
+      .welcome p {
+        max-width: 280px;
+      }
+
+      .mobile-sheet-hint {
+        display: block;
       }
 
       .carousel-wrapper {
@@ -708,7 +783,11 @@
       }
 
       .content {
-        padding: 4.5rem 1rem 1.5rem;
+        padding: 1.5rem 1rem 6rem;
+      }
+
+      .sidebar {
+        max-height: min(84dvh, 620px);
       }
 
       .carousel-item {
@@ -721,19 +800,10 @@
 <body>
   <div class="app" x-data="ebookarr()">
 
-    <!-- Hamburger toggle (mobile) -->
-    <button class="hamburger" @click="sidebarOpen = !sidebarOpen" aria-label="Toggle sidebar">
-      <div class="hamburger-lines">
-        <span></span>
-        <span></span>
-        <span></span>
-      </div>
-    </button>
-
     <!-- Sidebar overlay (mobile) -->
     <div class="sidebar-overlay"
          :class="{ 'visible': sidebarOpen }"
-         @click="sidebarOpen = false"
+         @click="closeSearchPanel()"
          x-show="sidebarOpen"
          x-transition:enter="transition ease-out duration-300"
          x-transition:enter-start="opacity-0"
@@ -744,7 +814,7 @@
          style="display: none;"></div>
 
     <!-- Left Sidebar -->
-    <aside class="sidebar" :class="{ 'open': sidebarOpen }">
+    <aside id="mobile-search-panel" class="sidebar" :class="{ 'open': sidebarOpen }">
       <div class="sidebar-header">
         <h1>Ebookarr</h1>
         <hr class="brush-divider">
@@ -775,7 +845,7 @@
         </div>
 
         <button class="btn-primary"
-                @click="submit(); sidebarOpen = false"
+                @click="submit(); closeSearchPanel()"
                 :disabled="!query.trim() || !kindleMail || searching">
           <span x-text="searching ? 'Searching\u2026' : 'Search Book'"></span>
         </button>
@@ -788,16 +858,20 @@
       <!-- Welcome state -->
       <template x-if="searchResults.length === 0 && activeJobs.length === 0">
         <div class="welcome">
-          <div class="welcome-icon">
+          <button type="button"
+                  class="welcome-icon welcome-icon-button"
+                  @click="openSearchPanel()"
+                  aria-label="Open search inputs">
             <svg viewBox="0 0 24 24">
               <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
               <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
               <line x1="12" y1="6" x2="12" y2="13"/>
               <line x1="9" y1="9.5" x2="15" y2="9.5"/>
             </svg>
-          </div>
+          </button>
           <h2>Find your next book</h2>
           <p>Search by title or paste a Goodreads URL to discover and send ebooks to your Kindle</p>
+          <p class="mobile-sheet-hint">Tap the book to open the search fields</p>
         </div>
       </template>
 
@@ -877,6 +951,25 @@
 
     </main>
 
+    <button type="button"
+            class="mobile-launcher"
+            x-show="searchResults.length > 0 || activeJobs.length > 0 || sidebarOpen"
+            x-transition.opacity
+            @click="toggleSearchPanel()"
+            :aria-expanded="sidebarOpen.toString()"
+            aria-controls="mobile-search-panel"
+            aria-label="Open search inputs"
+            style="display: none;">
+      <span class="mobile-launcher-button">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+          <line x1="12" y1="6" x2="12" y2="13"/>
+          <line x1="9" y1="9.5" x2="15" y2="9.5"/>
+        </svg>
+      </span>
+    </button>
+
     <!-- Confirmation modal -->
     <template x-if="confirmBook">
       <div class="modal-backdrop" @click.self="confirmBook = null">
@@ -935,6 +1028,23 @@
         scrollCarousel(dir) {
           const el = document.querySelector('.carousel');
           if (el) el.scrollBy({ left: dir * 200, behavior: 'smooth' });
+        },
+
+        openSearchPanel() {
+          this.sidebarOpen = true;
+          this.$nextTick(() => document.getElementById('query')?.focus());
+        },
+
+        closeSearchPanel() {
+          this.sidebarOpen = false;
+        },
+
+        toggleSearchPanel() {
+          if (this.sidebarOpen) {
+            this.closeSearchPanel();
+          } else {
+            this.openSearchPanel();
+          }
         },
 
         async submit() {

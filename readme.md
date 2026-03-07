@@ -27,7 +27,7 @@ Application secrets are fetched from a Bitwarden vault at startup. In production
 2. [Generate a personal API key](https://bitwarden.com/help/personal-api-key/) from your web vault (Account Settings > Security > Keys > API Key)
 3. Create the following items in your Bitwarden vault:
 
-| Bitwarden Item Title | Password Field Contains |
+| Bitwarden Item | Password Field Contains |
 |---|---|
 | `Ebookarr` | Gmail app password |
 | `Ebookarr API Key` | Server API key for endpoint auth |
@@ -116,7 +116,7 @@ BW_CLIENT_SECRET=...
 BW_MASTER_PASSWORD=...
 ```
 
-Do not store `GMAIL_PASSWORD` or `API_KEY` in this file. Those are loaded from Bitwarden at startup.
+Do not store `GMAIL_PASSWORD` or `API_KEY` in this file. Those are loaded from Bitwarden at startup using the configured item IDs in `config.py`.
 
 #### 6. Make sure the Bitwarden CLI is in the service's `PATH`
 
@@ -154,7 +154,7 @@ If the service fails to start, common causes are:
 - **Bitwarden CLI not found** — check the `PATH` in the service unit (step 6).
 - **Wrong file permissions** — the `ebookarr` user must own `/opt/ebookarr` and be able to read the bootstrap `.env`.
 - **Bitwarden login failure** — run `sudo -u ebookarr env $(cat /opt/ebookarr/.env | xargs) bw login --apikey` to test credentials interactively.
-- **Missing Bitwarden items** — make sure the `Ebookarr` and `Ebookarr API Key` items exist in your vault.
+- **Wrong Bitwarden item IDs** — verify the configured item IDs in `config.py` still point at the right vault items.
 - **Missing Python packages** — make sure you ran `uv sync` in `/opt/ebookarr` (step 4).
 
 #### Running without systemd
@@ -211,10 +211,10 @@ Defaults in `config.py` cover:
 
 Runtime secrets are fetched from Bitwarden at startup and should not be stored on disk:
 
-| Secret | Bitwarden Item |
-|---|---|
-| `GMAIL_PASSWORD` | `Ebookarr` |
-| `API_KEY` | `Ebookarr API Key` |
+| Secret | Config Setting | Current Vault Item |
+|---|---|---|
+| `GMAIL_PASSWORD` | `gmail_password_bw_item_id` | `Ebookarr` |
+| `API_KEY` | `api_key_bw_item_id` | `Ebookarr API Key` |
 
 For local development and E2E tests, you can still override non-secret settings or test-only values with environment variables if needed.
 

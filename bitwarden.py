@@ -71,24 +71,24 @@ def bw_unlock(settings: Settings) -> str:
     return match.group(1)
 
 
-def bw_get_item_password(session: str, item_title: str) -> str:
-    """Fetch the login password for a vault item by its title.
+def bw_get_item_password(session: str, item_id: str) -> str:
+    """Fetch the login password for a vault item by its Bitwarden item ID.
 
     The session key is passed via the BW_SESSION env var to avoid
     leaking it through the process argument list.
     """
-    logger.info(f"Fetching password for Bitwarden item '{item_title}'")
-    result = _run_bw("get", "item", item_title, extra_env={"BW_SESSION": session})
+    logger.info(f"Fetching password for Bitwarden item id '{item_id}'")
+    result = _run_bw("get", "item", item_id, extra_env={"BW_SESSION": session})
     try:
         item = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise BitwardenError(f"Invalid JSON from 'bw get item {item_title}'") from exc
+        raise BitwardenError(f"Invalid JSON from 'bw get item {item_id}'") from exc
 
     try:
         password = item["login"]["password"]
     except (KeyError, TypeError) as exc:
-        raise BitwardenError(f"No login password found in Bitwarden item '{item_title}'") from exc
-    logger.info(f"Successfully retrieved password for '{item_title}'")
+        raise BitwardenError(f"No login password found in Bitwarden item '{item_id}'") from exc
+    logger.info(f"Successfully retrieved password for item id '{item_id}'")
     return password
 
 
@@ -99,12 +99,12 @@ def bw_lock() -> None:
 def fetch_secrets(settings: Settings) -> None:
     """Log in to Bitwarden, fetch all application secrets, and lock the vault."""
     secret_mappings = [
-        ("gmail_password", settings.gmail_password_bw_item_title),
-        ("api_key", settings.api_key_bw_item_title)
+        ("gmail_password", settings.gmail_password_bw_item_id),
+        ("api_key", settings.api_key_bw_item_id),
     ]
     secrets_needed = [
-        (attr, title) for attr, title in secret_mappings
-        if title and not getattr(settings, attr)
+        (attr, item_id) for attr, item_id in secret_mappings
+        if item_id and not getattr(settings, attr)
     ]
     if not secrets_needed:
         logger.info("All secrets already set from environment, skipping Bitwarden")
@@ -115,10 +115,10 @@ def fetch_secrets(settings: Settings) -> None:
     session = bw_unlock(settings)
 
     try:
-        for attr, item_title in secrets_needed:
-            value = bw_get_item_password(session, item_title)
+        for attr, item_id in secrets_needed:
+            value = bw_get_item_password(session, item_id)
             setattr(settings, attr, value)
-            logger.info(f"Loaded secret '{attr}' from Bitwarden item '{item_title}'")
+            logger.info(f"Loaded secret '{attr}' from Bitwarden item id '{item_id}'")
     finally:
         bw_lock()
         logger.info("Bitwarden vault locked")
