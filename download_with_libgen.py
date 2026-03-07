@@ -180,7 +180,10 @@ def _wait_for_download(download_dir: Path, since: float, url: str, page_attempt:
                 f"Detected download candidate for {url} on page attempt {page_attempt}, "
                 f"poll attempt {poll_attempt + 1}/{DOWNLOAD_POLL_ATTEMPTS}: {book_path.name}"
             )
-            completed_candidates = [candidate for candidate in candidates if candidate.suffix != '.part']
+            completed_candidates = [
+                candidate for candidate in candidates
+                if candidate.suffix != '.part' and candidate.stat().st_size > 0
+            ]
             if completed_candidates:
                 completed_path = completed_candidates[0]
                 logger.info(
