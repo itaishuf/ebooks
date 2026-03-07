@@ -74,6 +74,15 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
     return correct_active_links[0]
 
 
+def _force_quit_driver(driver: webdriver.Firefox) -> None:
+    """Kill geckodriver directly, bypassing the HTTP session teardown that can hang."""
+    try:
+        driver.service.process.kill()
+        driver.service.process.wait(timeout=5)
+    except Exception as e:
+        logger.warning(f"Browser cleanup failed: {e}")
+
+
 @log_call
 def download_book_using_selenium(url: str) -> Path:
     base_download_dir = Path(settings.download_dir).resolve()
@@ -138,10 +147,7 @@ def download_book_using_selenium(url: str) -> Path:
     except NoSuchElementException as e:
         raise DownloadError('Failed to find book in libgen') from e
     finally:
-        try:
-            driver.quit()
-        except Exception as e:
-            logger.warning(f"driver.quit() failed, Firefox session may be orphaned: {e}")
+        _force_quit_driver(driver)
 
 
 def _click_download_button(driver: webdriver.Firefox, button_xpath: str, url: str) -> None:

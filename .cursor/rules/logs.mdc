@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+ 
+how to access production logs:
+- docker compose exec ebookarr sh -lc 'ls -lah /data && tail -n 100 /data/books.log'
