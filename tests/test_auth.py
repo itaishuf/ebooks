@@ -1,127 +1,158 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
-
-import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import HTTPException
-from fastapi.security import HTTPAuthorizationCredentials
+from fastapi import HTTPException, Request
 
 import auth
 
 
-@pytest.fixture
-def rsa_key_pair():
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return private_key, private_key.public_key()
-
-
 @pytest.fixture(autouse=True)
 def auth_settings(monkeypatch):
-    monkeypatch.setattr(auth.settings, "supabase_url", "https://example.supabase.co")
-    monkeypatch.setattr(auth.settings, "supabase_issuer", "")
-    monkeypatch.setattr(auth.settings, "supabase_jwks_url", "")
-    monkeypatch.setattr(auth.settings, "supabase_jwt_audience", "authenticated")
+    monkeypatch.setattr(auth.settings, "google_client_id", "google-client-id")
+    monkeypatch.setattr(auth.settings, "google_client_secret", "google-client-secret")
+    monkeypatch.setattr(auth.settings, "session_secret", "session-secret")
+    monkeypatch.setattr(auth.settings, "app_base_url", "https://ebookarr.test")
+    monkeypatch.setattr(auth.settings, "session_same_site", "lax")
+    monkeypatch.setattr(auth.settings, "session_https_only", False)
     monkeypatch.setattr(auth.settings, "require_verified_email", True)
-    if hasattr(auth._get_jwks_client, "cache_clear"):
-        auth._get_jwks_client.cache_clear()
-    yield
-    if hasattr(auth._get_jwks_client, "cache_clear"):
-        auth._get_jwks_client.cache_clear()
 
 
-def _make_token(private_key, **overrides):
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": "user-123",
-        "email": "reader@example.com",
-        "aud": "authenticated",
-        "iss": "https://example.supabase.co/auth/v1",
-        "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(minutes=5)).timestamp()),
-        "email_verified": True,
-    }
-    payload.update(overrides)
-    return jwt.encode(payload, private_key, algorithm="RS256")
-
-
-def test_verify_access_token_accepts_valid_token(monkeypatch, rsa_key_pair):
-    private_key, public_key = rsa_key_pair
-    token = _make_token(private_key)
-    monkeypatch.setattr(
-        auth,
-        "_get_jwks_client",
-        lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
+def _make_request(session: dict | None = None) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 443),
+            "session": session or {},
+        }
     )
-
-    claims = auth.verify_access_token(token)
-
-    assert claims["sub"] == "user-123"
-    assert claims["email"] == "reader@example.com"
 
 
 @pytest.mark.parametrize(
-    ("token_overrides", "use_raw_token", "expected_error"),
+    ("field_name", "value", "expected_message"),
     [
-        ({"exp": int((datetime.now(timezone.utc) - timedelta(minutes=1)).timestamp())}, False, "Token expired"),
-        ({"iss": "https://attacker.example.com/auth/v1"}, False, "Invalid token issuer"),
-        ({"aud": "public"}, False, "Invalid token audience"),
-        ({}, True, "Invalid token"),
+        ("google_client_id", "", "google_client_id"),
+        ("google_client_secret", "", "google_client_secret"),
+        ("session_secret", "", "session_secret"),
+        ("app_base_url", "not-a-url", "app_base_url"),
     ],
 )
-def test_verify_access_token_rejects_bad_tokens(
-    monkeypatch, rsa_key_pair, token_overrides, use_raw_token, expected_error
-):
-    private_key, public_key = rsa_key_pair
-    token = "not-a-jwt" if use_raw_token else _make_token(private_key, **token_overrides)
-    monkeypatch.setattr(
-        auth,
-        "_get_jwks_client",
-        lambda: SimpleNamespace(get_signing_key_from_jwt=lambda _token: SimpleNamespace(key=public_key)),
-    )
+def test_validate_auth_settings_requires_required_values(monkeypatch, field_name, value, expected_message):
+    monkeypatch.setattr(auth.settings, field_name, value)
 
-    with pytest.raises(HTTPException, match=expected_error):
-        auth.verify_access_token(token)
+    with pytest.raises(ValueError, match=expected_message):
+        auth.validate_auth_settings()
 
 
-def test_get_current_user_requires_verified_email(monkeypatch):
-    monkeypatch.setattr(
-        auth,
-        "verify_access_token",
-        lambda _token: {
+def test_validate_auth_settings_rejects_insecure_none_same_site(monkeypatch):
+    monkeypatch.setattr(auth.settings, "session_same_site", "none")
+    monkeypatch.setattr(auth.settings, "session_https_only", False)
+
+    with pytest.raises(ValueError, match="session_https_only"):
+        auth.validate_auth_settings()
+
+
+def test_build_session_user_keeps_minimal_google_identity():
+    session_user = auth.build_session_user(
+        {
             "sub": "user-123",
             "email": "reader@example.com",
-            "email_verified": False,
+            "email_verified": "true",
+            "name": "Reader Example",
+            "picture": "https://example.com/avatar.png",
+        }
+    )
+
+    assert session_user == {
+        "user_id": "user-123",
+        "email": "reader@example.com",
+        "email_verified": True,
+        "name": "Reader Example",
+    }
+
+
+def test_set_authenticated_session_replaces_previous_session_state():
+    request = _make_request({"stale": "value"})
+
+    user = auth.set_authenticated_session(
+        request,
+        {
+            "sub": "user-123",
+            "email": "reader@example.com",
+            "email_verified": True,
+            "name": "Reader Example",
         },
     )
 
-    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
+    assert user == auth.AuthenticatedUser(
+        user_id="user-123",
+        email="reader@example.com",
+        email_verified=True,
+    )
+    assert request.session == {
+        auth.AUTH_SESSION_USER_KEY: {
+            "user_id": "user-123",
+            "email": "reader@example.com",
+            "email_verified": True,
+            "name": "Reader Example",
+        }
+    }
 
-    with pytest.raises(HTTPException, match="Email verification required"):
-        auth.get_current_user(credentials)
 
-
-def test_get_current_user_accepts_oauth_user_with_email_verified_in_user_metadata(monkeypatch):
-    """Google OAuth tokens have email_verified inside user_metadata, not at the top level."""
-    monkeypatch.setattr(
-        auth,
-        "verify_access_token",
-        lambda _token: {
-            "sub": "user-456",
-            "email": "reader@gmail.com",
-            "user_metadata": {"email_verified": True, "name": "Test User"},
-        },
+def test_get_current_user_accepts_verified_session():
+    request = _make_request(
+        {
+            auth.AUTH_SESSION_USER_KEY: {
+                "user_id": "user-456",
+                "email": "reader@gmail.com",
+                "email_verified": True,
+                "name": "Test User",
+            }
+        }
     )
 
-    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials="token")
-    user = auth.get_current_user(credentials)
+    user = auth.get_current_user(request)
 
     assert user.email == "reader@gmail.com"
     assert user.email_verified is True
 
 
-def test_get_current_user_requires_authorization_header():
+def test_get_current_user_requires_verified_email():
+    request = _make_request(
+        {
+            auth.AUTH_SESSION_USER_KEY: {
+                "user_id": "user-123",
+                "email": "reader@example.com",
+                "email_verified": False,
+            }
+        }
+    )
+
+    with pytest.raises(HTTPException, match="Email verification required"):
+        auth.get_current_user(request)
+
+
+def test_get_current_user_requires_session_cookie():
     with pytest.raises(HTTPException, match="Authentication required"):
-        auth.get_current_user(None)
+        auth.get_current_user(_make_request())
+
+
+def test_get_session_user_clears_invalid_session_payload():
+    request = _make_request(
+        {
+            auth.AUTH_SESSION_USER_KEY: {
+                "user_id": "user-123",
+                "email": "reader@example.com",
+            }
+        }
+    )
+
+    assert auth.get_session_user(request) is None
+    assert auth.AUTH_SESSION_USER_KEY not in request.session

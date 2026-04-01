@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from functools import lru_cache
+from urllib.parse import urlsplit
 
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import HTTPException, Request, status
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+AUTH_SESSION_USER_KEY = "authenticated_user"
 
 
 @dataclass(frozen=True)
@@ -26,45 +24,15 @@ def _auth_error(detail: str) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
     )
 
 
-def _normalized_supabase_base_url() -> str:
-    return settings.supabase_url.rstrip("/")
+def get_app_base_url() -> str:
+    return settings.app_base_url.rstrip("/")
 
 
-def get_supabase_issuer() -> str:
-    if settings.supabase_issuer:
-        return settings.supabase_issuer.rstrip("/")
-    base_url = _normalized_supabase_base_url()
-    if not base_url:
-        return ""
-    return f"{base_url}/auth/v1"
-
-
-def get_supabase_jwks_url() -> str:
-    if settings.supabase_jwks_url:
-        return settings.supabase_jwks_url
-    base_url = _normalized_supabase_base_url()
-    if not base_url:
-        return ""
-    return f"{base_url}/auth/v1/.well-known/jwks.json"
-
-
-def validate_auth_settings() -> None:
-    if not get_supabase_issuer():
-        raise ValueError("Supabase auth is not configured: set `supabase_url` or `supabase_issuer`.")
-    if not get_supabase_jwks_url():
-        raise ValueError("Supabase auth is not configured: set `supabase_url` or `supabase_jwks_url`.")
-    if not settings.supabase_jwt_audience:
-        raise ValueError("Supabase auth is not configured: set `supabase_jwt_audience`.")
-
-
-@lru_cache(maxsize=1)
-def _get_jwks_client() -> jwt.PyJWKClient:
-    validate_auth_settings()
-    return jwt.PyJWKClient(get_supabase_jwks_url())
+def get_google_redirect_uri() -> str:
+    return f"{get_app_base_url()}/auth/google/callback"
 
 
 def _claim_is_truthy(value: object) -> bool:
@@ -75,74 +43,97 @@ def _claim_is_truthy(value: object) -> bool:
     return False
 
 
-def _is_email_verified(claims: dict) -> bool:
-    if _claim_is_truthy(claims.get("email_verified")):
-        return True
-    if claims.get("email_confirmed_at") or claims.get("confirmed_at"):
-        return True
-    # Supabase puts email_verified inside user_metadata for OAuth providers (e.g. Google)
-    user_metadata = claims.get("user_metadata") or {}
-    if isinstance(user_metadata, dict) and _claim_is_truthy(user_metadata.get("email_verified")):
-        return True
-    return False
-
-
-def verify_access_token(token: str) -> dict:
-    try:
-        signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
-        return jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256", "ES256"],
-            audience=settings.supabase_jwt_audience,
-            issuer=get_supabase_issuer(),
-            options={"require": ["exp", "iat", "sub"]},
+def validate_auth_settings() -> None:
+    if not settings.google_client_id:
+        raise ValueError("Google auth is not configured: set `google_client_id`.")
+    if not settings.google_client_secret:
+        raise ValueError(
+            "Google auth is not configured: set `google_client_secret` or `google_client_secret_bw_item_id`."
         )
-    except jwt.ExpiredSignatureError as exc:
-        logger.info("Rejected expired bearer token")
-        raise _auth_error("Token expired") from exc
-    except jwt.InvalidIssuerError as exc:
-        logger.warning("Rejected bearer token with invalid issuer")
-        raise _auth_error("Invalid token issuer") from exc
-    except jwt.InvalidAudienceError as exc:
-        logger.warning("Rejected bearer token with invalid audience")
-        raise _auth_error("Invalid token audience") from exc
-    except jwt.PyJWKClientError as exc:
-        logger.error(f"Failed to fetch signing key for bearer token: {exc}")
-        raise _auth_error("Authentication service unavailable") from exc
-    except jwt.InvalidTokenError as exc:
-        logger.warning(f"Rejected invalid bearer token: {exc.__class__.__name__}")
-        raise _auth_error("Invalid token") from exc
+    if not settings.session_secret:
+        raise ValueError(
+            "Signed sessions are not configured: set `session_secret` or `session_secret_bw_item_id`."
+        )
+
+    parsed = urlsplit(get_app_base_url())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("`app_base_url` must be an absolute http(s) URL.")
+    if settings.session_same_site == "none" and not settings.session_https_only:
+        raise ValueError("`session_same_site=none` requires `session_https_only=true`.")
 
 
-def build_authenticated_user(claims: dict) -> AuthenticatedUser:
-    user_id = claims.get("sub")
-    email = claims.get("email")
+def build_authenticated_user(session_user: dict) -> AuthenticatedUser:
+    user_id = session_user.get("user_id")
+    email = session_user.get("email")
+    email_verified = session_user.get("email_verified")
 
     if not isinstance(user_id, str) or not user_id:
-        logger.warning("Rejected bearer token without a valid subject claim")
-        raise _auth_error("Invalid token subject")
+        logger.warning("Rejected session without a valid user id")
+        raise _auth_error("Invalid session user")
     if not isinstance(email, str) or not email:
-        logger.warning(f"Rejected bearer token for user {user_id} without an email claim")
-        raise _auth_error("Invalid token email")
+        logger.warning(f"Rejected session for user {user_id} without an email")
+        raise _auth_error("Invalid session email")
+    if not isinstance(email_verified, bool):
+        logger.warning(f"Rejected session for user {user_id} without a valid email verification flag")
+        raise _auth_error("Invalid session verification state")
 
-    return AuthenticatedUser(
-        user_id=user_id,
-        email=email,
-        email_verified=_is_email_verified(claims),
-    )
+    return AuthenticatedUser(user_id=user_id, email=email, email_verified=email_verified)
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> AuthenticatedUser:
-    if credentials is None:
+def build_session_user(claims: dict) -> dict[str, str | bool]:
+    user_id = claims.get("sub")
+    email = claims.get("email")
+    name = claims.get("name")
+
+    if not isinstance(user_id, str) or not user_id:
+        raise ValueError("Google account response did not include a valid subject.")
+    if not isinstance(email, str) or not email:
+        raise ValueError("Google account response did not include an email address.")
+
+    session_user: dict[str, str | bool] = {
+        "user_id": user_id,
+        "email": email,
+        "email_verified": _claim_is_truthy(claims.get("email_verified")),
+    }
+    if isinstance(name, str) and name:
+        session_user["name"] = name
+    return session_user
+
+
+def set_authenticated_session(request: Request, claims: dict) -> AuthenticatedUser:
+    session_user = build_session_user(claims)
+    request.session.clear()
+    request.session[AUTH_SESSION_USER_KEY] = session_user
+    return build_authenticated_user(session_user)
+
+
+def clear_authenticated_session(request: Request) -> None:
+    request.session.clear()
+
+
+def get_session_user(request: Request) -> AuthenticatedUser | None:
+    session_user = request.session.get(AUTH_SESSION_USER_KEY)
+    if not isinstance(session_user, dict):
+        return None
+
+    try:
+        return build_authenticated_user(session_user)
+    except HTTPException:
+        request.session.pop(AUTH_SESSION_USER_KEY, None)
+        return None
+
+
+def get_session_user_payload(request: Request) -> dict | None:
+    session_user = request.session.get(AUTH_SESSION_USER_KEY)
+    if not isinstance(session_user, dict):
+        return None
+    return session_user
+
+
+def get_current_user(request: Request) -> AuthenticatedUser:
+    user = get_session_user(request)
+    if user is None:
         raise _auth_error("Authentication required")
-    if credentials.scheme.lower() != "bearer":
-        raise _auth_error("Bearer authentication required")
-
-    claims = verify_access_token(credentials.credentials)
-    user = build_authenticated_user(claims)
     if settings.require_verified_email and not user.email_verified:
         logger.info(f"Rejected unverified user {user.user_id}")
         raise _auth_error("Email verification required")

@@ -5,17 +5,20 @@ import time
 import zoneinfo
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID, uuid4
 
 import aiohttp
+from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
+from starlette.middleware.sessions import SessionMiddleware
 
 from abuse_protection import (
     RateLimitPolicy,
@@ -29,7 +32,17 @@ from abuse_protection import (
     sanitize_error_detail,
     sanitize_for_log,
 )
-from auth import AuthenticatedUser, get_current_user, validate_auth_settings
+from auth import (
+    AuthenticatedUser,
+    clear_authenticated_session,
+    get_app_base_url,
+    get_current_user,
+    get_google_redirect_uri,
+    get_session_user,
+    get_session_user_payload,
+    set_authenticated_session,
+    validate_auth_settings,
+)
 from bitwarden import fetch_secrets
 from config import settings
 from download_flow import ebook_download, ebook_download_by_md5, search_books
@@ -60,9 +73,13 @@ class _TZFormatter(logging.Formatter):
         return dt.strftime("%Y-%m-%d %H:%M:%S") + f",{record.msecs:03.0f}"
 
 
+def _email_log_extra() -> dict[str, bool]:
+    return {"allow_email_log": True}
+
+
 class _RequestContextFilter(logging.Filter):
     def filter(self, record):
-        record.msg = sanitize_for_log(record.getMessage())
+        record.msg = sanitize_for_log(record.getMessage(), allow_emails=getattr(record, "allow_email_log", False))
         record.args = ()
         record.job_id = current_job_id.get("-")
         record.user_id = current_user_id.get("-")
@@ -91,16 +108,12 @@ _download_semaphore: asyncio.Semaphore | None = None
 
 
 def _content_security_policy() -> str:
-    connect_sources = ["'self'"]
-    if settings.supabase_url:
-        connect_sources.append(settings.supabase_url.rstrip("/"))
-
     return (
         "default-src 'none'; "
         "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "img-src 'self' https:; "
-        f"connect-src {' '.join(connect_sources)}; "
+        "connect-src 'self'; "
         "font-src 'self' https://fonts.gstatic.com"
     )
 
@@ -109,8 +122,9 @@ def _content_security_policy() -> str:
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     global _download_semaphore, _start_time
     try:
-        validate_auth_settings()
         fetch_secrets(settings)
+        validate_auth_settings()
+        _refresh_session_secret()
     except BitwardenError as exc:
         raise SystemExit(
             f"\n  Bitwarden error: {exc}\n\n"
@@ -131,6 +145,23 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret or "development-session-secret",
+    session_cookie=settings.session_cookie_name,
+    same_site=settings.session_same_site,
+    https_only=settings.session_https_only,
+    max_age=settings.session_max_age_seconds,
+)
+
+
+def _refresh_session_secret() -> None:
+    for middleware in app.user_middleware:
+        if middleware.cls is SessionMiddleware:
+            middleware.kwargs["secret_key"] = settings.session_secret
+            app.middleware_stack = app.build_middleware_stack()
+            return
+    raise RuntimeError("Session middleware is not configured")
 
 
 @app.middleware("http")
@@ -157,6 +188,44 @@ static_dir.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
+def _frontend_redirect_url(*, auth_error: str | None = None) -> str:
+    query = urlencode({"auth_error": auth_error}) if auth_error else ""
+    base_url = f"{get_app_base_url()}/"
+    return f"{base_url}?{query}" if query else base_url
+
+
+def _build_google_oauth_client():
+    oauth = OAuth()
+    oauth.register(
+        name="google",
+        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
+        client_id=settings.google_client_id,
+        client_secret=settings.google_client_secret,
+        client_kwargs={"scope": "openid email profile"},
+    )
+    client = oauth.create_client("google")
+    if client is None:
+        raise RuntimeError("Google OAuth client could not be created")
+    return client
+
+
+def _normalized_request_origin(request: Request) -> str | None:
+    header_value = request.headers.get("origin") or request.headers.get("referer")
+    if not header_value:
+        return None
+    parsed = urlsplit(header_value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _enforce_same_origin(request: Request) -> None:
+    request_origin = _normalized_request_origin(request)
+    if request_origin == get_app_base_url():
+        return
+    raise HTTPException(status_code=403, detail="Cross-site requests are not allowed.")
+
+
 class DownloadRequest(BaseModel):
     goodreads_url: HttpUrl
     kindle_mail: EmailStr
@@ -176,13 +245,19 @@ class Md5DownloadRequest(BaseModel):
     kindle_mail: EmailStr
 
 
-def require_authenticated_user(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+current_user_dependency = Depends(get_current_user)
+
+
+def require_authenticated_user(user: AuthenticatedUser = current_user_dependency) -> AuthenticatedUser:
     current_user_id.set(user.user_id)
     return user
 
 
+authenticated_user_dependency = Depends(require_authenticated_user)
+
+
 def _make_job(owner: AuthenticatedUser | None = None, client_ip: str | None = None) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     job_id = str(uuid4())
     jobs[job_id] = {
         "status": "queued",
@@ -326,19 +401,85 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get('/auth/config')
-async def auth_config():
+@app.get('/auth/session')
+async def auth_session(request: Request):
+    user = get_session_user(request)
+    if user is None:
+        return {"authenticated": False, "user": None}
+
+    if settings.require_verified_email and not user.email_verified:
+        clear_authenticated_session(request)
+        return {"authenticated": False, "user": None}
+
+    session_user = get_session_user_payload(request) or {}
     return {
-        "supabase_url": settings.supabase_url,
-        "supabase_publishable_key": settings.supabase_publishable_key,
+        "authenticated": True,
+        "user": {
+            "id": user.user_id,
+            "email": user.email,
+            "email_verified": user.email_verified,
+            "name": session_user.get("name", ""),
+        },
     }
+
+
+@app.get('/auth/google/login')
+async def auth_google_login(request: Request):
+    clear_authenticated_session(request)
+    client = _build_google_oauth_client()
+    return await client.authorize_redirect(request, get_google_redirect_uri(), prompt="select_account")
+
+
+@app.get('/auth/google/callback')
+async def auth_google_callback(request: Request):
+    client = _build_google_oauth_client()
+    try:
+        token = await client.authorize_access_token(request)
+        claims = token.get("userinfo")
+        if claims is None:
+            claims = await client.parse_id_token(request, token)
+        if claims is None:
+            raise ValueError("Google did not return an ID token.")
+
+        user = set_authenticated_session(request, dict(claims))
+        if settings.require_verified_email and not user.email_verified:
+            clear_authenticated_session(request)
+            logger.info(f"Rejected unverified Google user {user.user_id}")
+            return RedirectResponse(
+                _frontend_redirect_url(auth_error="Email verification required"),
+                status_code=302,
+            )
+
+        logger.info(f"Authenticated Google user email {user.email}", extra=_email_log_extra())
+        return RedirectResponse(_frontend_redirect_url(), status_code=302)
+    except OAuthError as exc:
+        clear_authenticated_session(request)
+        logger.warning(f"Google OAuth callback failed: {sanitize_error_detail(exc, 'OAuth login failed')}")
+        return RedirectResponse(
+            _frontend_redirect_url(auth_error="Google sign-in could not be completed."),
+            status_code=302,
+        )
+    except ValueError as exc:
+        clear_authenticated_session(request)
+        logger.warning(f"Rejected Google auth callback: {sanitize_error_detail(exc, 'Invalid Google identity')}")
+        return RedirectResponse(
+            _frontend_redirect_url(auth_error=sanitize_error_detail(exc, "Invalid Google identity")),
+            status_code=302,
+        )
+
+
+@app.post('/auth/logout')
+async def auth_logout(request: Request):
+    _enforce_same_origin(request)
+    clear_authenticated_session(request)
+    return {"status": "signed_out"}
 
 
 @app.get('/search')
 async def search(
     request: Request,
     q: str = Query(min_length=1, max_length=200),
-    user: AuthenticatedUser = Depends(require_authenticated_user),
+    user: AuthenticatedUser = authenticated_user_dependency,
 ):
     _perform_maintenance()
     client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
@@ -369,9 +510,10 @@ async def search(
 async def download_from_goodreads(
     http_request: Request,
     payload: DownloadRequest,
-    user: AuthenticatedUser = Depends(require_authenticated_user),
+    user: AuthenticatedUser = authenticated_user_dependency,
 ):
     _perform_maintenance()
+    _enforce_same_origin(http_request)
     client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
     _enforce_endpoint_rate_limits(
         endpoint_name="download",
@@ -418,9 +560,10 @@ async def download_from_goodreads(
 async def download_from_md5(
     http_request: Request,
     payload: Md5DownloadRequest,
-    user: AuthenticatedUser = Depends(require_authenticated_user),
+    user: AuthenticatedUser = authenticated_user_dependency,
 ):
     _perform_maintenance()
+    _enforce_same_origin(http_request)
     client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
     _enforce_endpoint_rate_limits(
         endpoint_name="download-md5",
@@ -464,7 +607,7 @@ async def download_from_md5(
 
 
 @app.get('/jobs/{job_id}')
-async def get_job(job_id: UUID, request: Request, user: AuthenticatedUser = Depends(require_authenticated_user)):
+async def get_job(job_id: UUID, request: Request, user: AuthenticatedUser = authenticated_user_dependency):
     _perform_maintenance()
     client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
     _enforce_endpoint_rate_limits(

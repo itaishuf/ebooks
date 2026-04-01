@@ -9,7 +9,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=Lora:wght@400;500;600&display=swap" rel="stylesheet">
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root {
       --bg: #efe0c8;
@@ -1451,7 +1450,7 @@
               <div class="auth-card-header">
                 <span class="auth-eyebrow">Reading Passport</span>
                 <h2 class="auth-card-title">Signed in</h2>
-                <p class="auth-card-copy">Your session lives in the browser now, so search and downloads stay tied to your account.</p>
+                <p class="auth-card-copy">Your signed session stays in this browser, so search and downloads remain tied to your account.</p>
               </div>
               <div class="auth-user-chip">
                 <div class="auth-user-stack">
@@ -1473,7 +1472,7 @@
               <div class="auth-card-header">
                 <span class="auth-eyebrow">Reader Access</span>
                 <h2 class="auth-card-title">Sign in to browse</h2>
-                <p class="auth-card-copy">Use your Google account for instant, one-tap access. New readers are set up automatically.</p>
+                <p class="auth-card-copy">Use your Google account to start a secure session here. New readers are set up automatically.</p>
               </div>
 
               <button class="btn-google"
@@ -1489,8 +1488,9 @@
                 <span x-text="authButtonLabel()"></span>
               </button>
 
-              <p class="auth-hint" x-show="authState === 'session_boot' || authState === 'signing_in'">
-                Restoring your last session…
+              <p class="auth-hint"
+                 x-show="authState === 'session_boot' || authState === 'signing_in'"
+                 x-text="authState === 'signing_in' ? 'Opening Google sign-in…' : 'Restoring your last session…'">
               </p>
               <p x-show="authMessage" x-text="authMessage" class="auth-note"></p>
               <p x-show="authError" x-text="authError" class="auth-error"></p>
@@ -1704,34 +1704,14 @@
       }
     }
 
-    function removeAuthParamsFromUrl() {
+    function removeAuthFeedbackFromUrl() {
       const url = new URL(window.location.href);
-      const authParams = [
-        'code',
-        'type',
-        'access_token',
-        'refresh_token',
-        'expires_in',
-        'expires_at',
-        'token_type',
-        'error',
-        'error_code',
-        'error_description',
-        'sb',
-      ];
+      const authParams = ['auth_error'];
       let changed = false;
 
       for (const key of authParams) {
         if (url.searchParams.has(key)) {
           url.searchParams.delete(key);
-          changed = true;
-        }
-      }
-
-      if (url.hash) {
-        const hashParams = new URLSearchParams(url.hash.slice(1));
-        if (authParams.some(key => hashParams.has(key))) {
-          url.hash = '';
           changed = true;
         }
       }
@@ -1744,16 +1724,7 @@
 
     function readAuthFeedbackFromUrl() {
       const url = new URL(window.location.href);
-      const fromSearch = url.searchParams;
-      const fromHash = new URLSearchParams(url.hash.startsWith('#') ? url.hash.slice(1) : url.hash);
-      const errorCode = fromSearch.get('error_code') || fromHash.get('error_code');
-      const errorDescription = fromSearch.get('error_description') || fromHash.get('error_description');
-
-      if (!errorCode && !errorDescription) return '';
-      if (errorCode === 'access_denied') {
-        return 'Sign-in was cancelled. Try again when ready.';
-      }
-      return errorDescription || 'Authentication was cancelled or could not be completed.';
+      return url.searchParams.get('auth_error') || '';
     }
 
     function ebookarr() {
@@ -1763,9 +1734,7 @@
         authState: 'session_boot',
         authError: '',
         authMessage: '',
-        authConfig: null,
         currentUser: null,
-        supabase: null,
         searching: false,
         searchResults: [],
         activeJobs: [],
@@ -1866,63 +1835,32 @@
           const authFeedback = readAuthFeedbackFromUrl();
 
           try {
-            const res = await fetch('/auth/config');
+            const res = await fetch('/auth/session', { credentials: 'same-origin' });
             if (!res.ok) throw new Error(await parseError(res));
-            this.authConfig = await res.json();
-
-            if (!this.authConfig.supabase_url || !this.authConfig.supabase_publishable_key) {
-              this.authState = 'signed_out';
-              this.authError = 'Server auth is not configured yet. Add the Supabase browser settings and reload.';
-              return;
-            }
-
-            if (!window.supabase || typeof window.supabase.createClient !== 'function') {
-              throw new Error('Supabase client failed to load.');
-            }
-
-            const redirectTo = `${window.location.origin}${window.location.pathname}`;
-            this.supabase = window.supabase.createClient(
-              this.authConfig.supabase_url,
-              this.authConfig.supabase_publishable_key,
-              {
-                auth: {
-                  persistSession: true,
-                  autoRefreshToken: true,
-                  detectSessionInUrl: true,
-                  flowType: 'pkce',
-                },
-              }
-            );
-
-            this.supabase.auth.onAuthStateChange((_event, session) => {
-              this.applySession(session);
-              if (session) removeAuthParamsFromUrl();
-            });
-
-            const { data, error } = await this.supabase.auth.getSession();
-            if (error) throw error;
-            this.applySession(data.session);
-            if (!data.session && authFeedback) {
-              this.authState = 'signed_out';
+            const data = await res.json();
+            this.applySession(data.authenticated ? data.user : null);
+            if (!data.authenticated && authFeedback) {
               this.authError = authFeedback;
-              removeAuthParamsFromUrl();
             }
           } catch (e) {
             this.authState = 'signed_out';
             this.authError = e?.message || 'Unable to initialize authentication.';
+          } finally {
+            if (authFeedback) removeAuthFeedbackFromUrl();
           }
         },
 
-        applySession(session) {
-          if (!session || !session.user) {
+        applySession(user) {
+          if (!user) {
             this.currentUser = null;
             this.authState = 'signed_out';
             return;
           }
 
           this.currentUser = {
-            id: session.user.id,
-            email: session.user.email || '',
+            id: user.id,
+            email: user.email || '',
+            name: user.name || '',
           };
           this.authState = 'signed_in';
           this.authError = '';
@@ -1933,22 +1871,11 @@
         },
 
         async signInWithGoogle() {
-          if (this.isAuthBusy() || !this.supabase) return;
-
+          if (this.isAuthBusy()) return;
+          this.authState = 'signing_in';
           this.authError = '';
           this.authMessage = '';
-
-          try {
-            const { error } = await this.supabase.auth.signInWithOAuth({
-              provider: 'google',
-              options: {
-                redirectTo: `${window.location.origin}${window.location.pathname}`,
-              },
-            });
-            if (error) throw error;
-          } catch (e) {
-            this.authError = e?.message || 'Unable to start Google sign-in.';
-          }
+          window.location.assign('/auth/google/login');
         },
 
         async signOut() {
@@ -1956,10 +1883,11 @@
           this.authMessage = '';
 
           try {
-            if (this.supabase) {
-              const { error } = await this.supabase.auth.signOut();
-              if (error) throw error;
-            }
+            const res = await fetch('/auth/logout', {
+              method: 'POST',
+              credentials: 'same-origin',
+            });
+            if (!res.ok) throw new Error(await parseError(res));
             this.handleSignedOut('Signed out.');
           } catch (e) {
             this.authError = e?.message || 'Unable to sign out cleanly.';
@@ -1976,53 +1904,20 @@
           this.authMessage = message;
         },
 
-        async getAccessToken(forceRefresh = false) {
-          if (!this.supabase) return null;
-
-          if (forceRefresh) {
-            const { data, error } = await this.supabase.auth.refreshSession();
-            if (error) return null;
-            return data.session?.access_token || null;
+        async authFetch(url, options = {}) {
+          const headers = new Headers(options.headers || {});
+          if (options.body && !headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json');
           }
 
-          const { data, error } = await this.supabase.auth.getSession();
-          if (error) return null;
-          return data.session?.access_token || null;
-        },
-
-        async authFetch(url, options = {}, allowRetry = true) {
-          const buildHeaders = token => {
-            const headers = new Headers(options.headers || {});
-            headers.set('Authorization', `Bearer ${token}`);
-            if (options.body && !headers.has('Content-Type')) {
-              headers.set('Content-Type', 'application/json');
-            }
-            return headers;
-          };
-
-          const token = await this.getAccessToken(false);
-          if (!token) {
-            this.handleSignedOut('Your session expired. Sign in again.');
-            throw new Error('Authentication required');
-          }
-
-          let res = await fetch(url, { ...options, headers: buildHeaders(token) });
+          const res = await fetch(url, {
+            ...options,
+            headers,
+            credentials: 'same-origin',
+          });
           if (res.status !== 401) return res;
 
-          if (allowRetry) {
-            const refreshedToken = await this.getAccessToken(true);
-            if (refreshedToken) {
-              res = await fetch(url, { ...options, headers: buildHeaders(refreshedToken) });
-              if (res.status !== 401) return res;
-            }
-          }
-
           const detail = await parseError(res);
-          if (detail === 'Email verification required') {
-            this.authError = detail;
-            throw new Error(detail);
-          }
-
           this.handleSignedOut(detail || 'Your session expired. Sign in again.');
           throw new Error(detail || 'Authentication failed');
         },

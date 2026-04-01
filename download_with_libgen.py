@@ -12,6 +12,7 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
+    WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
@@ -144,8 +145,8 @@ def download_book_using_selenium(url: str) -> Path:
             fallback_url=url,
             fallback_message=fallback_message,
         )
-    except NoSuchElementException as e:
-        raise DownloadError('Failed to find book in libgen') from e
+    except (NoSuchElementException, WebDriverException) as e:
+        raise DownloadError(f"Failed to download book from libgen: {e}") from e
     finally:
         _force_quit_driver(driver)
 

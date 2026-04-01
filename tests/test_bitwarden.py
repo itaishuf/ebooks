@@ -1,6 +1,6 @@
 import json
 import subprocess
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -8,9 +8,9 @@ from bitwarden import fetch_secrets
 from exceptions import BitwardenError
 
 
-def _make_bw_run(session_key: str = "test-session-key", item_password: str = "gmail-pass"):
+def _make_bw_run(session_key: str = "test-session-key", item_passwords: dict[str, str] | None = None):
     """Return a subprocess.run side_effect that simulates a successful Bitwarden CLI interaction."""
-    item_json = json.dumps({"login": {"password": item_password}})
+    passwords = item_passwords or {}
 
     def _run(cmd, **kwargs):
         if cmd[1] == "logout":
@@ -24,6 +24,8 @@ def _make_bw_run(session_key: str = "test-session-key", item_password: str = "gm
                 args=cmd, returncode=0, stdout=f'export BW_SESSION="{session_key}"', stderr=""
             )
         if cmd[1] == "get":
+            item_id = cmd[3]
+            item_json = json.dumps({"login": {"password": passwords[item_id]}})
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=item_json, stderr="")
         if cmd[1] == "lock":
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
@@ -34,14 +36,21 @@ def _make_bw_run(session_key: str = "test-session-key", item_password: str = "gm
 
 @patch("bitwarden.subprocess.run")
 def test_fetch_secrets_full_startup_flow(mock_run):
-    """Full Bitwarden startup flow: login → unlock → fetch Gmail password → lock.
+    """Full Bitwarden startup flow: login → unlock → fetch runtime secrets → lock.
 
     Verifies the important observable outcomes:
-    - Gmail password is populated on the settings object
+    - runtime secrets are populated on the settings object
     - Vault is locked after fetching
     - BW_CLIENT_ID/SECRET env vars are translated to BW_CLIENTID/CLIENTSECRET for the CLI
     """
-    mock_run.side_effect = _make_bw_run(session_key="session-abc", item_password="gmail-pass")
+    mock_run.side_effect = _make_bw_run(
+        session_key="session-abc",
+        item_passwords={
+            "gmail-item-id": "gmail-pass",
+            "google-item-id": "google-secret",
+            "session-item-id": "session-secret",
+        },
+    )
 
     mock_settings = MagicMock()
     mock_settings.bw_server_url = "https://vault.example.com/"
@@ -49,11 +58,17 @@ def test_fetch_secrets_full_startup_flow(mock_run):
     mock_settings.bw_client_secret = "client-secret"
     mock_settings.bw_master_password = "master-pass"
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
+    mock_settings.google_client_secret_bw_item_id = "google-item-id"
+    mock_settings.session_secret_bw_item_id = "session-item-id"
     mock_settings.gmail_password = ""
+    mock_settings.google_client_secret = ""
+    mock_settings.session_secret = ""
 
     fetch_secrets(mock_settings)
 
     assert mock_settings.gmail_password == "gmail-pass"
+    assert mock_settings.google_client_secret == "google-secret"
+    assert mock_settings.session_secret == "session-secret"
 
     login_call = next(c for c in mock_run.call_args_list if c.args[0][1] == "login")
     env = login_call.kwargs["env"]
@@ -71,7 +86,11 @@ def test_fetch_secrets_full_startup_flow(mock_run):
 def test_fetch_secrets_locks_vault_on_failure(mock_login, mock_unlock, mock_get, mock_lock):
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
+    mock_settings.google_client_secret_bw_item_id = ""
+    mock_settings.session_secret_bw_item_id = ""
     mock_settings.gmail_password = ""
+    mock_settings.google_client_secret = ""
+    mock_settings.session_secret = ""
 
     with pytest.raises(BitwardenError):
         fetch_secrets(mock_settings)
@@ -88,7 +107,11 @@ def test_fetch_secrets_skips_bitwarden_when_runtime_secrets_are_already_loaded(
 ):
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
+    mock_settings.google_client_secret_bw_item_id = "google-item-id"
+    mock_settings.session_secret_bw_item_id = "session-item-id"
     mock_settings.gmail_password = "already-set"
+    mock_settings.google_client_secret = "already-set"
+    mock_settings.session_secret = "already-set"
 
     fetch_secrets(mock_settings)
 
@@ -107,7 +130,11 @@ def test_fetch_secrets_skips_empty_item_ids(mock_login, mock_unlock, mock_get, m
 
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
+    mock_settings.google_client_secret_bw_item_id = ""
+    mock_settings.session_secret_bw_item_id = ""
     mock_settings.gmail_password = ""
+    mock_settings.google_client_secret = ""
+    mock_settings.session_secret = ""
 
     fetch_secrets(mock_settings)
 

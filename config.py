@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings
 
 
@@ -5,7 +7,7 @@ class Settings(BaseSettings):
     # Production keeps a minimal .env only for Bitwarden bootstrap credentials.
     # Everything else should use config defaults, explicit env overrides, or
     # runtime secrets fetched from Bitwarden at startup.
-    model_config = {"env_file": ".env"}
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
     # Server
     port: int = 19191
@@ -24,12 +26,15 @@ class Settings(BaseSettings):
     gmail_account: str = "itaishuf@gmail.com"
     gmail_password_bw_item_id: str = "d5b23dae-f723-48ac-b1da-6b155b0fbd71"
 
-    # Supabase Auth
-    supabase_url: str = "https://cxiroxexywspnysxflru.supabase.co"
-    supabase_jwks_url: str = ""
-    supabase_issuer: str = ""
-    supabase_jwt_audience: str = "authenticated"
-    supabase_publishable_key: str = ""
+    # Google OAuth / Session Auth
+    google_client_id: str = ""
+    google_client_secret_bw_item_id: str = ""
+    session_secret_bw_item_id: str = ""
+    app_base_url: str = "http://localhost:19191"
+    session_cookie_name: str = "ebookarr_session"
+    session_same_site: Literal["lax", "strict", "none"] = "lax"
+    session_https_only: bool = False
+    session_max_age_seconds: int = 7 * 24 * 60 * 60
     require_verified_email: bool = True
 
 
@@ -95,6 +100,8 @@ class Settings(BaseSettings):
 
     # Runtime application secrets (populated from Bitwarden item IDs at startup)
     gmail_password: str = ""
+    google_client_secret: str = ""
+    session_secret: str = ""
 
     # Local development / E2E test configuration
     test_goodreads_url: str = ""

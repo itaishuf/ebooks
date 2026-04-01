@@ -2,11 +2,12 @@ import os
 from pathlib import Path
 
 import pytest
+from selenium.common.exceptions import WebDriverException
 
 import download_flow
 import download_with_libgen
 import service
-from exceptions import ManualDownloadRequiredError
+from exceptions import DownloadError, ManualDownloadRequiredError
 
 
 class _FakeElement:
@@ -85,6 +86,23 @@ def test_download_book_using_selenium_raises_manual_fallback(monkeypatch, tmp_pa
     assert driver.quit_called is True
 
 
+def test_download_book_using_selenium_converts_webdriver_exception(monkeypatch, tmp_path):
+    class _ErrorDriver(_FakeDriver):
+        def get(self, url):
+            self.visited_urls.append(url)
+            raise WebDriverException("Reached error page: about:neterror?e=connectionFailure")
+
+    driver = _ErrorDriver()
+
+    monkeypatch.setattr(download_with_libgen.settings, "download_dir", str(tmp_path))
+    monkeypatch.setattr(download_with_libgen.webdriver, "Firefox", lambda options=None: driver)
+
+    with pytest.raises(DownloadError, match="Failed to download book from libgen") as exc:
+        download_with_libgen.download_book_using_selenium("https://libgen.test/get.php?md5=neterror")
+
+    assert "about:neterror" in str(exc.value)
+
+
 def test_wait_for_download_returns_completed_file_when_part_is_newer(monkeypatch, tmp_path):
     monkeypatch.setattr(download_with_libgen.time, "sleep", lambda _seconds: None)
     download_dir = tmp_path / "selenium-job"
@@ -128,6 +146,46 @@ def test_wait_for_download_ignores_files_outside_session_directory(monkeypatch, 
     )
 
     assert result == completed_path
+
+
+def test_send_to_kindle_logs_recipient_email_once(monkeypatch, tmp_path):
+    class _FakeSMTP:
+        def __init__(self, _host, _port):
+            self.logged_in = None
+            self.sent_to = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def login(self, username, password):
+            self.logged_in = (username, password)
+
+        def send_message(self, msg):
+            self.sent_to = msg["To"]
+
+    logged_messages = []
+
+    book_path = tmp_path / "book.epub"
+    book_path.write_bytes(b"ebook-bytes")
+
+    monkeypatch.setattr(download_flow.settings, "gmail_account", "sender@example.com")
+    monkeypatch.setattr(download_flow.settings, "gmail_password", "gmail-password")
+    monkeypatch.setattr(download_flow.smtplib, "SMTP_SSL", _FakeSMTP)
+
+    def fake_info(message, *args, **kwargs):
+        logged_messages.append((message, kwargs))
+
+    monkeypatch.setattr(download_flow.logger, "info", fake_info)
+
+    download_flow.send_to_kindle("reader@example.com", book_path)
+
+    matching = [entry for entry in logged_messages if "reader@example.com" in entry[0]]
+    assert matching == [
+        ("Sending ebook to Kindle email reader@example.com", {"extra": {"allow_email_log": True}})
+    ]
 
 
 @pytest.mark.asyncio

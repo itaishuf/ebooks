@@ -33,9 +33,10 @@ class RateLimitResult:
     retry_after_seconds: int
 
 
-def sanitize_for_log(value: object) -> str:
+def sanitize_for_log(value: object, *, allow_emails: bool = False) -> str:
     text = str(value)
-    text = _replace_emails(text)
+    if not allow_emails:
+        text = _replace_emails(text)
     text = _replace_urls(text)
     text = _replace_bearer_tokens(text)
     text = _replace_labeled_secrets(text)
@@ -55,7 +56,7 @@ def reject_query_string_auth(request: Request) -> None:
         return
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Authentication query parameters are not supported; use the Authorization header.",
+        detail="Authentication query parameters are not supported.",
     )
 
 

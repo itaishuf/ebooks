@@ -77,6 +77,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
     msg['From'] = settings.gmail_account
     msg['To'] = email
     msg['Subject'] = 'book'
+    logger.info(f"Sending ebook to Kindle email {email}", extra={"allow_email_log": True})
 
     if book_path:
         with open(book_path, 'rb') as f:

@@ -31,6 +31,22 @@ def test_sanitize_for_log_redacts_emails_urls_and_secrets():
     assert "[redacted-secret]" in sanitized
 
 
+def test_sanitize_for_log_can_allow_emails_for_intentional_logs():
+    message = (
+        "reader@example.com requested https://goodreads.example/book "
+        'with Authorization: Bearer eyJabc.def.ghi and password="super-secret"'
+    )
+
+    sanitized = sanitize_for_log(message, allow_emails=True)
+
+    assert "reader@example.com" in sanitized
+    assert "https://goodreads.example/book" not in sanitized
+    assert "super-secret" not in sanitized
+    assert "eyJabc.def.ghi" not in sanitized
+    assert "[redacted-url]" in sanitized
+    assert "[redacted-secret]" in sanitized
+
+
 def test_cleanup_expired_jobs_removes_only_old_terminal_jobs():
     jobs = {
         "old-done": {"status": "done", "finished_at_epoch": 10.0},

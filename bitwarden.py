@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import subprocess
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -34,7 +35,7 @@ def _run_bw(*args: str, extra_env: dict[str, str] | None = None) -> subprocess.C
         logger.debug(f"Completed: {cmd_label}")
         return result
     except FileNotFoundError:
-        raise BitwardenError("Bitwarden CLI ('bw') is not installed or not in PATH")
+        raise BitwardenError("Bitwarden CLI ('bw') is not installed or not in PATH") from None
     except subprocess.TimeoutExpired as exc:
         raise BitwardenError(f"{cmd_label} timed out after {_BW_TIMEOUT}s") from exc
     except subprocess.CalledProcessError as exc:
@@ -48,10 +49,8 @@ def bw_login(settings: Settings) -> None:
     expects BW_CLIENTID / BW_CLIENTSECRET (no underscore). We bridge that here.
     Logs out first to clear any stale session that would block API key login.
     """
-    try:
+    with suppress(BitwardenError):
         _run_bw("logout")
-    except BitwardenError:
-        pass  # not logged in — that's fine
     logger.info(f"Configuring Bitwarden server to {settings.bw_server_url}")
     _run_bw("config", "server", settings.bw_server_url)
     _run_bw("login", "--apikey", extra_env={
@@ -102,6 +101,8 @@ def fetch_secrets(settings: Settings) -> None:
     """Log in to Bitwarden, fetch all application secrets, and lock the vault."""
     secret_mappings = [
         ("gmail_password", settings.gmail_password_bw_item_id),
+        ("google_client_secret", settings.google_client_secret_bw_item_id),
+        ("session_secret", settings.session_secret_bw_item_id),
     ]
     secrets_needed = [
         (attr, item_id) for attr, item_id in secret_mappings

@@ -1,8 +1,8 @@
-## Ebookarr - iOS Shortcut + FastAPI eBook Downloader
+## Ebookarr - Google Sign-In + FastAPI eBook Downloader
 
-Receives a Goodreads URL from an iOS Shortcut, finds the book on LibGen / Anna's Archive, downloads it, and emails it to your Kindle.
+A FastAPI + Alpine.js browser app that signs readers in with Google, searches for ebooks, downloads them from LibGen / Anna's Archive, and emails them to Kindle.
 
-iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b9d4a50abcd03045)
+Current auth is browser-only. Open the app in a browser, sign in with Google, and use the protected search/download flow there. Direct API clients such as iOS Shortcuts or scripts are not supported by the v1 cookie-session flow.
 
 ## Prerequisites
 
@@ -13,15 +13,15 @@ iOS shortcut available [here](https://www.icloud.com/shortcuts/66149e9ecd5c4ce1b
 
 ## Setup
 
-### Shortcut
+### Browser Access
 
-1. Download the 'Actions' app on your iPhone
-2. Change the Host to your Ebookarr endpoint (for example the host Tailscale IP, or the `itai-books.<tailnet>.ts.net` name when using the Docker Compose + Tailscale deployment below). The endpoint path is `/download`.
-3. Enter your Kindle email address
+1. Open your Ebookarr origin in a browser (for example `http://localhost:19191` locally or `https://itai-books.<tailnet>.ts.net` through Funnel).
+2. Sign in with Google from the left sidebar.
+3. Enter your Kindle email address and use the search / download flow from the web app.
 
 ### Bitwarden
 
-Application secrets are fetched from a Bitwarden vault at startup. In production, `.env` is only a minimal bootstrap file for the Bitwarden CLI credentials.
+Application secrets are fetched from a Bitwarden vault at startup. In production, `.env` stays small and only needs Bitwarden bootstrap credentials plus the non-secret auth settings that define your public app origin and Google client ID.
 
 1. [Install the Bitwarden CLI](https://bitwarden.com/help/cli/)
 2. [Generate a personal API key](https://bitwarden.com/help/personal-api-key/) from your web vault (Account Settings > Security > Keys > API Key)
@@ -30,34 +30,37 @@ Application secrets are fetched from a Bitwarden vault at startup. In production
 | Bitwarden Item | Password Field Contains |
 |---|---|
 | `Ebookarr` | Gmail app password |
+| `Ebookarr Google OAuth` | Google OAuth client secret |
+| `Ebookarr Session Secret` | Random session signing secret |
 
-4. Copy `.env.example` to `.env` and fill in only your Bitwarden bootstrap credentials:
+4. Copy `.env.example` to `.env` and fill in your Bitwarden bootstrap credentials plus the non-secret auth settings for this deployment:
 
 ```bash
 cp .env.example .env
 nano .env
 ```
 
-   ### Supabase Google OAuth
+### Google OAuth
 
-Sign-in uses Google OAuth via Supabase Auth. Before deploying you must configure the provider in both Google Cloud and the Supabase dashboard.
+Sign-in now uses server-owned Google OAuth plus a signed cookie session. Before deploying you must configure Google Cloud and point the app at the correct public origin.
 
 #### 1. Create a Google OAuth client
 
 1. Go to [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials) and create an **OAuth 2.0 Client ID** (Application type: **Web application**).
-2. Under **Authorized JavaScript origins**, add your app origin(s), for example:
-   - `https://itai-books.<tailnet>.ts.net` (Tailscale Funnel public URL)
-   - `http://localhost:19191` (local development, if needed)
-3. Under **Authorized redirect URIs**, add the Supabase callback URL shown in the Supabase dashboard:
-   - `https://<your-project-ref>.supabase.co/auth/v1/callback`
-4. Save. Google gives you a **Client ID** and **Client Secret**.
+2. Under **Authorized redirect URIs**, add the app callback URL for each origin you will use:
+   - `https://itai-books.<tailnet>.ts.net/auth/google/callback`
+   - `http://localhost:19191/auth/google/callback`
+3. Save. Google gives you a **Client ID** and **Client Secret**.
 
-#### 2. Enable the provider in Supabase
+#### 2. Configure Ebookarr
 
-1. In your Supabase project go to **Authentication → Providers → Google**.
-2. Enable the provider and paste the **Client ID** and **Client Secret** from step 1.
-3. Leave **Skip nonce checks** and **Allow users without an email** both off.
-4. Save the provider config.
+1. Set `GOOGLE_CLIENT_ID` to the client ID from step 1.
+2. Set `APP_BASE_URL` to the exact browser origin for this deployment:
+   - `https://itai-books.<tailnet>.ts.net` for Funnel
+   - `http://localhost:19191` for local development
+3. Store the Google client secret in Bitwarden and set `GOOGLE_CLIENT_SECRET_BW_ITEM_ID`.
+4. Store a random session-signing secret in Bitwarden and set `SESSION_SECRET_BW_ITEM_ID`.
+5. For HTTPS deployments such as Funnel, set `SESSION_HTTPS_ONLY=true`.
 
 ### Gmail Configuration
 
@@ -277,7 +280,7 @@ Compose overrides these app paths:
 - `DOWNLOAD_DIR=/data/downloads`
 - `LOG_PATH=/data/books.log`
 
-Do not store `GMAIL_PASSWORD` in `.env`. The app fetches it from Bitwarden at startup.
+Do not store `GMAIL_PASSWORD`, `GOOGLE_CLIENT_SECRET`, or `SESSION_SECRET` in `.env`. The app fetches those runtime secrets from Bitwarden at startup.
 
 ## Configuration
 
@@ -287,13 +290,18 @@ Production configuration uses three layers:
 2. Optional environment overrides when you need host-specific behavior
 3. Bitwarden for runtime application secrets
 
-The production `.env` file is intentionally minimal and only bootstraps Bitwarden:
+The production `.env` file is intentionally small and typically contains Bitwarden bootstrap credentials plus deployment-specific non-secret auth settings:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `BW_CLIENT_ID` | Yes | - | Bitwarden personal API key client ID |
 | `BW_CLIENT_SECRET` | Yes | - | Bitwarden personal API key client secret |
 | `BW_MASTER_PASSWORD` | Yes | - | Bitwarden master password (for vault unlock) |
+| `APP_BASE_URL` | Yes | `http://localhost:19191` | Public browser origin used for OAuth callback and same-origin checks |
+| `GOOGLE_CLIENT_ID` | Yes | - | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET_BW_ITEM_ID` | Yes unless `GOOGLE_CLIENT_SECRET` is set directly | - | Bitwarden item ID containing the Google OAuth client secret |
+| `SESSION_SECRET_BW_ITEM_ID` | Yes unless `SESSION_SECRET` is set directly | - | Bitwarden item ID containing the signed-session secret |
+| `SESSION_HTTPS_ONLY` | No | `false` | Set to `true` for HTTPS deployments such as Tailscale Funnel |
 
 Defaults in `config.py` cover:
 
@@ -304,6 +312,9 @@ Defaults in `config.py` cover:
 | `HOST` | `0.0.0.0` |
 | `DOWNLOAD_DIR` | `/tmp/ebooks` |
 | `LOG_PATH` | `./books.log` |
+| `SESSION_COOKIE_NAME` | `ebookarr_session` |
+| `SESSION_SAME_SITE` | `lax` |
+| `SESSION_MAX_AGE_SECONDS` | `604800` |
 | `TEST_GOODREADS_URL` | empty |
 | `TEST_KINDLE_EMAIL` | empty |
 
@@ -312,8 +323,10 @@ Runtime secrets are fetched from Bitwarden at startup and should not be stored o
 | Secret | Config Setting | Current Vault Item |
 |---|---|---|
 | `GMAIL_PASSWORD` | `gmail_password_bw_item_id` | `Ebookarr` |
+| `GOOGLE_CLIENT_SECRET` | `google_client_secret_bw_item_id` | `Ebookarr Google OAuth` |
+| `SESSION_SECRET` | `session_secret_bw_item_id` | `Ebookarr Session Secret` |
 
-For local development and E2E tests, you can still override non-secret settings or test-only values with environment variables if needed.
+For local development and E2E tests, you can still override non-secret settings or test-only values with environment variables if needed. The browser flow remains same-origin, so local auth expects `APP_BASE_URL=http://localhost:19191`.
 
 ## Development
 
