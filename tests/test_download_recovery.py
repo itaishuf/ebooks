@@ -20,13 +20,29 @@ class _FakeSwitchTo:
         return None
 
 
+class _FakeProcess:
+    def __init__(self):
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        pass
+
+
+class _FakeService:
+    def __init__(self):
+        self.process = _FakeProcess()
+
+
 class _FakeDriver:
     def __init__(self, options=None):
         self.options = options
         self.current_window_handle = "main"
         self.switch_to = _FakeSwitchTo()
         self.visited_urls = []
-        self.quit_called = False
+        self.service = _FakeService()
 
     def get(self, url):
         self.visited_urls.append(url)
@@ -35,7 +51,7 @@ class _FakeDriver:
         return _FakeElement()
 
     def quit(self):
-        self.quit_called = True
+        pass
 
 
 def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_path):
@@ -63,7 +79,7 @@ def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_pa
     assert book_path.name == "book.epub"
     assert book_path.parent.parent == tmp_path
     assert book_path.parent.name.startswith("selenium-")
-    assert driver.quit_called is True
+    assert driver.service.process.killed is True
     assert len(wait_calls) == 2
     assert wait_calls[0][0] == wait_calls[1][0]
     assert wait_calls[0][0] != tmp_path
@@ -83,7 +99,7 @@ def test_download_book_using_selenium_raises_manual_fallback(monkeypatch, tmp_pa
 
     assert "Selenium never detected a new downloaded file" in str(exc.value)
     assert exc.value.fallback_url == "https://libgen.test/get.php?md5=def"
-    assert driver.quit_called is True
+    assert driver.service.process.killed is True
 
 
 def test_download_book_using_selenium_converts_webdriver_exception(monkeypatch, tmp_path):
@@ -222,11 +238,11 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
         fallback_message="Try downloading the file manually from LibGen.",
     ), Path("/tmp/final.pdf")]
 
-    async def fake_get_isbn(_url):
-        return "isbn-123"
+    async def fake_get_book_info(_url):
+        return {"isbn": "isbn-123", "title": "Test Book"}
 
-    async def fake_get_book_md5(_isbn, ext="epub"):
-        return ["epub-md5"] if ext == "epub" else ["pdf-md5"]
+    async def fake_search_aa_all_formats(_isbn, title=""):
+        return {"epub": ["epub-md5"], "pdf": ["pdf-md5"], "mobi": []}
 
     async def fake_download_via_libgen(_isbn, _md5_list):
         result = downloaded_paths.pop(0)
@@ -237,8 +253,8 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
     def fake_send_to_kindle(_email, book_path=None, book_data=b"", filename=""):
         sent_books.append(book_path or filename or book_data)
 
-    monkeypatch.setattr(download_flow, "get_isbn", fake_get_isbn)
-    monkeypatch.setattr(download_flow, "get_book_md5", fake_get_book_md5)
+    monkeypatch.setattr(download_flow, "get_book_info", fake_get_book_info)
+    monkeypatch.setattr(download_flow, "search_aa_all_formats", fake_search_aa_all_formats)
     monkeypatch.setattr(download_flow, "_download_via_libgen", fake_download_via_libgen)
     monkeypatch.setattr(download_flow, "send_to_kindle", fake_send_to_kindle)
 
@@ -275,7 +291,6 @@ async def test_ebook_download_by_md5_surfaces_manual_fallback(monkeypatch):
     with pytest.raises(ManualDownloadRequiredError) as exc:
         await download_flow.ebook_download_by_md5(
             "0123456789abcdef0123456789abcdef",
-            "epub",
             "reader@example.com",
         )
 

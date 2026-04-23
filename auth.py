@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, status
 
+from abuse_protection import extract_client_ip
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -130,8 +133,49 @@ def get_session_user_payload(request: Request) -> dict | None:
     return session_user
 
 
+_TAILNET_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_tailnet_ip(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in _TAILNET_NETWORK
+    except ValueError:
+        return False
+
+
+def get_api_token_user(request: Request) -> AuthenticatedUser | None:
+    if not settings.api_token:
+        return None
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:]
+    if not hmac.compare_digest(token, settings.api_token):
+        return None
+
+    client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
+    if not _is_tailnet_ip(client_ip):
+        logger.warning(f"Rejected API token request from non-tailnet IP {client_ip}")
+        return None
+
+    return AuthenticatedUser(
+        user_id="api-token",
+        email=settings.api_token_user_email,
+        email_verified=True,
+    )
+
+
+def is_api_token_request(request: Request) -> bool:
+    if not settings.api_token:
+        return False
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return False
+    return hmac.compare_digest(auth_header[7:], settings.api_token)
+
+
 def get_current_user(request: Request) -> AuthenticatedUser:
-    user = get_session_user(request)
+    user = get_api_token_user(request) or get_session_user(request)
     if user is None:
         raise _auth_error("Authentication required")
     if settings.require_verified_email and not user.email_verified:

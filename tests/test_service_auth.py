@@ -213,7 +213,6 @@ def test_logout_rejects_cross_site_requests(client):
             {
                 "json": {
                     "md5": "0123456789abcdef0123456789abcdef",
-                    "ext": "epub",
                     "kindle_mail": "reader@example.com",
                 }
             },
@@ -308,7 +307,6 @@ def test_download_md5_uses_post_body(client, monkeypatch):
         "/download/md5",
         json={
             "md5": "0123456789abcdef0123456789abcdef",
-            "ext": "epub",
             "kindle_mail": "reader@example.com",
         },
         headers=_same_origin_headers(),
@@ -439,3 +437,214 @@ def test_download_job_completes_and_is_pollable(client, monkeypatch):
     assert data["status"] == "done"
     assert data["error"] is None
     assert data["fallback"] is None
+
+
+# --- API token authentication ---
+
+TEST_API_TOKEN = "test-api-token-secret-value"
+TAILNET_IP = "100.100.1.42"
+NON_TAILNET_IP = "203.0.113.1"
+
+
+def _api_token_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {TEST_API_TOKEN}"}
+
+
+@pytest.fixture
+def api_token_client(monkeypatch):
+    """TestClient configured for API token auth from a tailnet IP."""
+    service.jobs.clear()
+    service.app.dependency_overrides.clear()
+    service._rate_limiter = SlidingWindowRateLimiter()
+    service._download_semaphore = None
+    service._last_cleanup_at = 0.0
+
+    async def fake_bootstrap():
+        return None
+
+    monkeypatch.setattr(service, "validate_auth_settings", lambda: None)
+    monkeypatch.setattr(service, "fetch_secrets", lambda _settings: None)
+    monkeypatch.setattr(service, "bootstrap_annas_archive_url", fake_bootstrap)
+    monkeypatch.setattr(service.settings, "google_client_id", "google-client-id")
+    monkeypatch.setattr(service.settings, "google_client_secret", "google-client-secret")
+    monkeypatch.setattr(service.settings, "session_secret", "test-session-secret")
+    monkeypatch.setattr(service.settings, "app_base_url", APP_BASE_URL)
+    monkeypatch.setattr(service.settings, "session_https_only", False)
+    monkeypatch.setattr(service.settings, "require_verified_email", True)
+    monkeypatch.setattr(service.settings, "api_token", TEST_API_TOKEN)
+    monkeypatch.setattr(service.settings, "api_token_user_email", "shortcut@example.com")
+
+    with TestClient(service.app, base_url=APP_BASE_URL) as test_client:
+        yield test_client
+
+    service.jobs.clear()
+    service.app.dependency_overrides.clear()
+
+
+def _patch_tailnet_ip(monkeypatch, ip: str = TAILNET_IP):
+    original = service.extract_client_ip
+
+    def patched_extract(request, trusted_proxy_ips):
+        return ip
+
+    monkeypatch.setattr(service, "extract_client_ip", patched_extract)
+
+    import auth as auth_module
+    monkeypatch.setattr(auth_module, "extract_client_ip", patched_extract)
+
+
+def test_api_token_grants_access_to_search(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    async def fake_search_books(query: str):
+        return [{"title": "Dune"}]
+
+    monkeypatch.setattr(service, "search_books", fake_search_books)
+
+    response = api_token_client.get("/search?q=dune", headers=_api_token_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"results": [{"title": "Dune"}]}
+
+
+def test_api_token_grants_access_to_download(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download", lambda *_args, **_kwargs: None)
+
+    response = api_token_client.post(
+        "/download",
+        json={
+            "goodreads_url": "https://www.goodreads.com/book/show/4671",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_api_token_headers(),
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    assert service.jobs[job_id]["owner_user_id"] == "api-token"
+    assert service.jobs[job_id]["owner_email"] == "shortcut@example.com"
+
+
+def test_api_token_grants_access_to_download_md5(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download_by_md5", lambda *_args, **_kwargs: None)
+
+    response = api_token_client.post(
+        "/download/md5",
+        json={
+            "md5": "0123456789abcdef0123456789abcdef",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_api_token_headers(),
+    )
+
+    assert response.status_code == 200
+    assert "job_id" in response.json()
+
+
+def test_api_token_grants_access_to_job_polling(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+    job_id = service._make_job(
+        AuthenticatedUser(user_id="api-token", email="shortcut@example.com", email_verified=True),
+    )
+
+    response = api_token_client.get(f"/jobs/{job_id}", headers=_api_token_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+
+
+def test_api_token_rejected_from_non_tailnet_ip(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch, ip=NON_TAILNET_IP)
+
+    response = api_token_client.get("/search?q=dune", headers=_api_token_headers())
+
+    assert response.status_code == 401
+
+
+def test_invalid_api_token_returns_401(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    response = api_token_client.get(
+        "/search?q=dune",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_api_token_disabled_when_setting_empty(client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+    monkeypatch.setattr(service.settings, "api_token", "")
+
+    response = client.get("/search?q=dune", headers=_api_token_headers())
+
+    assert response.status_code == 401
+
+
+def test_api_token_download_bypasses_same_origin(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download", lambda *_args, **_kwargs: None)
+
+    response = api_token_client.post(
+        "/download",
+        json={
+            "goodreads_url": "https://www.goodreads.com/book/show/4671",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_api_token_headers(),
+    )
+
+    assert response.status_code == 200
+
+
+def test_api_token_download_md5_bypasses_same_origin(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download_by_md5", lambda *_args, **_kwargs: None)
+
+    response = api_token_client.post(
+        "/download/md5",
+        json={
+            "md5": "0123456789abcdef0123456789abcdef",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_api_token_headers(),
+    )
+
+    assert response.status_code == 200
+
+
+def test_api_token_job_ownership_isolated_from_session_users(api_token_client, monkeypatch):
+    _patch_tailnet_ip(monkeypatch)
+    job_id = service._make_job(
+        AuthenticatedUser(user_id="google-user-1", email="reader@example.com", email_verified=True),
+    )
+
+    response = api_token_client.get(f"/jobs/{job_id}", headers=_api_token_headers())
+
+    assert response.status_code == 404

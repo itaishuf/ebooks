@@ -1,0 +1,4 @@
+FROM python:3.11-slim
+RUN pip install --no-cache-dir curl-cffi aiohttp
+COPY download_proxy.py /app/proxy.py
+CMD ["python", "/app/proxy.py"]

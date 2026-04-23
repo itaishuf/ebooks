@@ -88,6 +88,12 @@ class Settings(BaseSettings):
         "https://libgen.rs",
     ]
 
+    # FlareSolverr — Cloudflare JS-challenge bypass sidecar
+    flaresolverr_url: str = "http://flaresolverr:8191"
+    # Download proxy — runs on the internal network with direct internet access
+    # (no Tailscale), uses curl_cffi Chrome impersonation for TLS fingerprinting.
+    download_proxy_url: str = "http://download-proxy:8192"
+
     # Selenium
     selenium_download_timeout_minutes: int = 10
     selenium_click_attempts: int = 3
@@ -98,10 +104,15 @@ class Settings(BaseSettings):
     bw_client_secret: str = ""
     bw_master_password: str = ""
 
+    # API token auth (for programmatic clients like iOS Shortcuts)
+    api_token_bw_item_id: str = "29378e86-fd28-4826-abdf-d93e4ceb9363"
+    api_token_user_email: str = ""
+
     # Runtime application secrets (populated from Bitwarden item IDs at startup)
     gmail_password: str = ""
     google_client_secret: str = ""
     session_secret: str = ""
+    api_token: str = ""
 
     # Local development / E2E test configuration
     test_goodreads_url: str = ""

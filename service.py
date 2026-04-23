@@ -40,6 +40,7 @@ from auth import (
     get_google_redirect_uri,
     get_session_user,
     get_session_user_payload,
+    is_api_token_request,
     set_authenticated_session,
     validate_auth_settings,
 )
@@ -241,7 +242,6 @@ class DownloadRequest(BaseModel):
 
 class Md5DownloadRequest(BaseModel):
     md5: str = Field(pattern=r'^[0-9a-fA-F]{32}$')
-    ext: str = Field(default="epub", pattern=r'^(epub|pdf|mobi|azw3)$')
     kindle_mail: EmailStr
 
 
@@ -513,7 +513,8 @@ async def download_from_goodreads(
     user: AuthenticatedUser = authenticated_user_dependency,
 ):
     _perform_maintenance()
-    _enforce_same_origin(http_request)
+    if not is_api_token_request(http_request):
+        _enforce_same_origin(http_request)
     client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
     _enforce_endpoint_rate_limits(
         endpoint_name="download",
@@ -563,7 +564,8 @@ async def download_from_md5(
     user: AuthenticatedUser = authenticated_user_dependency,
 ):
     _perform_maintenance()
-    _enforce_same_origin(http_request)
+    if not is_api_token_request(http_request):
+        _enforce_same_origin(http_request)
     client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
     _enforce_endpoint_rate_limits(
         endpoint_name="download-md5",
@@ -600,7 +602,7 @@ async def download_from_md5(
     asyncio.create_task(
         _run_download_job(
             job_id,
-            lambda: ebook_download_by_md5(payload.md5, payload.ext, payload.kindle_mail, on_status=on_status),
+            lambda: ebook_download_by_md5(payload.md5, payload.kindle_mail, on_status=on_status),
         )
     )
     return {"job_id": job_id}

@@ -103,6 +103,7 @@ def fetch_secrets(settings: Settings) -> None:
         ("gmail_password", settings.gmail_password_bw_item_id),
         ("google_client_secret", settings.google_client_secret_bw_item_id),
         ("session_secret", settings.session_secret_bw_item_id),
+        ("api_token", settings.api_token_bw_item_id),
     ]
     secrets_needed = [
         (attr, item_id) for attr, item_id in secret_mappings
