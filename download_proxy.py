@@ -10,6 +10,8 @@ import logging
 from aiohttp import web
 from curl_cffi.requests import AsyncSession
 
+from abuse_protection import sanitize_error_detail, sanitize_for_log
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -34,7 +36,8 @@ async def handle_download(request: web.Request) -> web.Response:
             k, _, v = part.partition("=")
             cookies[k.strip()] = v.strip()
 
-    logger.info(f"Proxying download: {url[:80]} cookies={list(cookies.keys())}")
+    safe_url = sanitize_for_log(url[:80])
+    logger.info(f"Proxying download: {safe_url} cookies={list(cookies.keys())}")
     try:
         async with AsyncSession(impersonate="chrome124") as session:
             resp = await session.get(
@@ -44,12 +47,12 @@ async def handle_download(request: web.Request) -> web.Response:
                 allow_redirects=True,
                 timeout=300,
             )
-        logger.info(f"Proxy got HTTP {resp.status_code} for {url[:80]}")
+        logger.info(f"Proxy got HTTP {resp.status_code} for {safe_url}")
         content_type = resp.headers.get("Content-Type", "application/octet-stream")
         return web.Response(body=resp.content, status=resp.status_code, content_type=content_type)
     except Exception as e:
-        logger.error(f"Proxy error for {url[:80]}: {e}")
-        return web.Response(status=502, text=str(e))
+        logger.error(f"Proxy error for {safe_url}: {sanitize_for_log(e)}")
+        return web.Response(status=502, text=sanitize_error_detail(e, "Download failed"))
 
 
 app = web.Application()

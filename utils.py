@@ -13,15 +13,20 @@ def _redact(value: str) -> str:
     return f"{value[:3]}***" if len(value) > 3 else "***"
 
 
-def _redact_args(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
-    """Redact argument values whose keyword names contain sensitive words."""
-    safe_kwargs = {}
-    for k, v in kwargs.items():
-        if any(word in k.lower() for word in _REDACTED_KEYWORDS) and isinstance(v, str):
-            safe_kwargs[k] = _redact(v)
+def _redact_bound_args(func: Callable, args: tuple, kwargs: dict) -> dict[str, object]:
+    """Redact all arguments (positional and keyword) whose parameter names contain sensitive words."""
+    try:
+        bound = inspect.signature(func).bind(*args, **kwargs)
+        bound.apply_defaults()
+    except (TypeError, ValueError):
+        return {"args": args, "kwargs": kwargs}
+    safe: dict[str, object] = {}
+    for name, value in bound.arguments.items():
+        if any(word in name.lower() for word in _REDACTED_KEYWORDS) and isinstance(value, str):
+            safe[name] = _redact(value)
         else:
-            safe_kwargs[k] = v
-    return args, safe_kwargs
+            safe[name] = value
+    return safe
 
 
 def _truncated_result(result) -> str:
@@ -38,8 +43,8 @@ def log_call(func: Callable) -> Callable:
     if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs):
-            safe_args, safe_kwargs = _redact_args(args, kwargs)
-            logger.info(f"function name:{func.__name__}, function arguments: {safe_args}, function keyword arguments: {safe_kwargs}")
+            safe = _redact_bound_args(func, args, kwargs)
+            logger.info(f"function name:{func.__name__}, arguments: {safe}")
             start_time = time.perf_counter()
             result = await func(*args, **kwargs)
             elapsed = time.perf_counter() - start_time
@@ -50,8 +55,8 @@ def log_call(func: Callable) -> Callable:
     else:
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs):
-            safe_args, safe_kwargs = _redact_args(args, kwargs)
-            logger.info(f"function name:{func.__name__}, function arguments: {safe_args}, function keyword arguments: {safe_kwargs}")
+            safe = _redact_bound_args(func, args, kwargs)
+            logger.info(f"function name:{func.__name__}, arguments: {safe}")
             start_time = time.perf_counter()
             result = func(*args, **kwargs)
             elapsed = time.perf_counter() - start_time

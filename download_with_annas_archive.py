@@ -133,8 +133,6 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
     html = solution["response"]
     soup = BeautifulSoup(html, "html.parser")
 
-    # Log a snippet and all <a> tags to help diagnose selector mismatches.
-    logger.debug(f"FlareSolverr HTML snippet for md5={md5}: {html[:3000]}")
     anchors = [(a.get("id", ""), a.get("class", ""), a.get("href", "")) for a in soup.find_all("a")]
     logger.info(f"FlareSolverr rendered anchors for md5={md5}: {anchors}")
 
