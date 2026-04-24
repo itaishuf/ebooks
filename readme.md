@@ -2,7 +2,7 @@
 
 A FastAPI + Alpine.js browser app that signs readers in with Google, searches for ebooks, downloads them from LibGen / Anna's Archive, and emails them to Kindle.
 
-Current auth is browser-only. Open the app in a browser, sign in with Google, and use the protected search/download flow there. Direct API clients such as iOS Shortcuts or scripts are not supported by the v1 cookie-session flow.
+Current auth is browser-only. Open the app in a browser, sign in with Google, and use the protected search/download flow there. Direct API clients such as iOS Shortcuts or scripts are only supported from LAN ip address range.
 
 ## Prerequisites
 
