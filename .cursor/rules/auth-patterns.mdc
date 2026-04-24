@@ -1,0 +1,38 @@
+---
+description: Auth architecture and ownership patterns for backend auth files, frontend auth session code, and auth tests
+globs: auth.py,config.py,service.py,static/index.html,tests/test_auth.py,tests/test_service_auth.py
+alwaysApply: false
+---
+
+# Auth Patterns
+
+## Two authentication paths
+
+1. **Google OAuth sessions** (primary, web UI) — `/auth/google/login` → Google → `/auth/google/callback` stores a signed session cookie; subsequent requests are authenticated via the cookie.
+2. **Static API token** (programmatic clients like iOS Shortcuts) — `Authorization: Bearer <token>` header, validated against the `api_token` setting. Restricted to Tailscale CGNAT IPs (`100.64.0.0/10`) only.
+
+Query-param auth (`?key=`, `?token=`, `?access_token=`, etc.) is rejected on all routes.
+
+## Backend auth model
+- Protected routes depend on `get_current_user()`, which tries API token first, then session cookie
+- Public routes: `/`, `/health`, `/auth/session`, `/auth/google/login`, `/auth/google/callback`
+- Side-effecting download starters remain `POST /download` and `POST /download/md5`
+- Same-origin enforcement is skipped for API token requests on POST routes
+
+## Token validation
+- `auth.py` is the source of truth for session parsing, API token comparison, and tailnet IP gating
+- API token comparison uses `hmac.compare_digest` for constant-time comparison
+- Never log raw bearer tokens or full raw claims
+
+## Job ownership
+- New jobs must record `owner_user_id` and `owner_email`
+- API token jobs use `user_id="api-token"` and `email=settings.api_token_user_email`
+- `GET /jobs/{job_id}` must return `404` for both unknown jobs and jobs owned by a different user
+
+## Frontend session flow
+- `static/index.html` checks `/auth/session` on load and redirects to `/auth/google/login` when unauthenticated
+- Authenticated fetches use session cookies (no explicit Authorization header needed from the browser)
+
+## Validation
+- Auth behavior belongs in `tests/test_auth.py`
+- Route protection, ownership, and API token behavior belongs in `tests/test_service_auth.py`

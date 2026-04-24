@@ -14,8 +14,9 @@ alwaysApply: true
 |------|------|
 | `service.py` | FastAPI app, security headers, auth/public routes, in-memory `jobs` store |
 | `auth.py` | Supabase bearer-token parsing, JWT/JWKS validation, verified-email enforcement |
-| `download_flow.py` | Core pipeline: `get_isbn`, `get_book_md5`, `ebook_download`, `ebook_download_by_md5`, `search_books` |
+| `download_flow.py` | Core pipeline: `get_book_info` (ISBN+title from Goodreads), `search_aa_all_formats` (title-based AA search → per-format MD5 dict), `ebook_download`, `ebook_download_by_md5`, `search_books` |
 | `download_with_libgen.py` | Selenium/Firefox download from LibGen (`choose_libgen_mirror`, `get_libgen_link`, `download_book_using_selenium`) |
+| `download_with_annas_archive.py` | FlareSolverr-based slow-download path for Anna's Archive |
 | `config.py` | Pydantic-settings `Settings` class for server, Supabase, Bitwarden, paths, and mirrors |
 | `bitwarden.py` | Bitwarden CLI bootstrap that fills runtime secrets still missing from env |
 | `runtime_bootstrap.py` | Startup helpers such as Anna's Archive mirror selection |

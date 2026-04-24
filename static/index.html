@@ -934,6 +934,14 @@
       line-height: 1.45;
     }
 
+    .step-note {
+      grid-column: 2;
+      font-size: 0.72rem;
+      color: var(--text-secondary, #9a9a9a);
+      margin-top: -0.4rem;
+      line-height: 1.4;
+    }
+
     .step-check {
       color: #fff8f0;
       font-size: 0.8rem;
@@ -1617,6 +1625,9 @@
                         </template>
                       </span>
                       <span class="step-copy" x-text="s.label"></span>
+                      <template x-if="isStepActive(job.status, s.key) && s.activeNote">
+                        <span class="step-note" x-text="s.activeNote"></span>
+                      </template>
                     </div>
                   </template>
                 </div>
@@ -1745,6 +1756,7 @@
           { key: 'fetching_isbn', label: 'Fetching ISBN' },
           { key: 'searching', label: 'Searching for book' },
           { key: 'downloading', label: 'Downloading' },
+          { key: 'trying_alternative', label: "Anna's Archive", activeNote: "LibGen unavailable, trying a slower source\u2026" },
           { key: 'sending', label: 'Sending to Kindle' },
           { key: 'done', label: 'Done' },
         ],

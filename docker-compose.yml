@@ -1,5 +1,10 @@
 x-ebookarr-port: &ebookarr_port "19191"
 
+networks:
+  # Shared internal network so ebookarr (which runs in tailscale's network
+  # namespace via network_mode: service:tailscale) can reach flaresolverr.
+  internal:
+
 services:
   tailscale:
     image: tailscale/tailscale:stable
@@ -15,13 +20,36 @@ services:
     volumes:
       - tailscale-state:/var/lib/tailscale
       - ./tailscale:/config:ro
+    networks:
+      - default
+      - internal
     restart: unless-stopped
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    restart: unless-stopped
+    environment:
+      - LOG_LEVEL=info
+    networks:
+      - internal
+
+  download-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.download-proxy
+    restart: unless-stopped
+    networks:
+      - internal
 
   ebookarr:
     build:
       context: .
     depends_on:
       tailscale:
+        condition: service_started
+      flaresolverr:
+        condition: service_started
+      download-proxy:
         condition: service_started
     env_file:
       - .env

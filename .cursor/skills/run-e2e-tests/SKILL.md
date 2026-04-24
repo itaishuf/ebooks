@@ -45,16 +45,8 @@ options.set_preference("browser.helperApps.neverAsk.saveToDisk",
 **Fix**: The Gmail app password has expired. The user must generate a new one at myaccount.google.com → Security → App passwords. Then update `GMAIL_PASSWORD` in `.env`.
 
 ### 5. ISBN extraction picking up wrong number
-**Symptom**: `get_isbn` returns a number like `1738790966` (looks like a Unix timestamp)  
-**Fix**: Ensure `get_isbn` uses JSON-LD structured data **first**:
-```python
-for script in soup.find_all('script', type='application/ld+json'):
-    data = json.loads(script.string)
-    isbn = data.get('isbn')
-    if isbn:
-        return isbn
-```
-Regex fallback on raw HTML can match image URL timestamps.
+**Symptom**: `get_book_info` returns an isbn like `1738790966` (looks like a Unix timestamp)  
+**Fix**: Ensure `get_book_info` extracts from JSON-LD structured data **first**, before falling back to regex on raw HTML. Regex can match image URL timestamps. Check the JSON-LD loop in `get_book_info` in `download_flow.py`.
 
 ### 6. Download directory doesn't exist
 **Symptom**: `FileNotFoundError` when Selenium tries to download  
@@ -71,5 +63,5 @@ E2E tests require these `.env` values:
 
 The app logs via `@log_call` decorator. Each function logs its arguments on entry and its result on exit. To trace a failed request:
 ```bash
-tail -100 books.log | grep -A5 "get_isbn\|get_book_md5\|download"
+tail -100 books.log | grep -A5 "get_book_info\|search_aa_all_formats\|download"
 ```

@@ -38,13 +38,20 @@ Note: `service.py` logs `"Created Goodreads download job for <user_id>"` — the
 
 A healthy job produces these entries in order:
 
-1. `get_isbn` called + returned
-2. `get_book_md5` called + returned (epub first, pdf fallback)
-3. `choose_libgen_mirror` called + returned
-4. `get_libgen_link` called + returned
-5. `download_book_using_selenium` called → "Starting Selenium download..." → "LibGen Selenium page attempt 1/2..." → "Detected download candidate..." → "Detected completed download..." → "Selenium download completed..." → **`sync_wrapper() return value`** (this line confirms the function fully returned)
-6. `send_to_kindle` called + returned
-7. `send_to_kindle return value: None` (success)
+1. `get_book_info` called + returned (isbn + title extracted from Goodreads)
+2. `search_aa_all_formats` called + returned (per-format MD5 dict: epub/pdf/mobi)
+3. One `Downloaded via ...` INFO line identifying which fallback path won:
+   - `Downloaded via LibGen (epub): <filename>` — best case
+   - `Downloaded via LibGen (pdf): <filename>`
+   - `Downloaded via LibGen (mobi→epub): <filename>` or `(mobi→pdf)` — includes a preceding `mobi→epub conversion succeeded` line
+   - `Downloaded via Anna's Archive (epub): <filename>` — LibGen exhausted
+   - `Downloaded via Anna's Archive (pdf): <filename>`
+   - `Downloaded via Anna's Archive (mobi→epub): <filename>` or `(mobi→pdf)`
+   Each failed attempt before the winner appears as a WARNING line.
+4. `send_to_kindle` called + returned
+5. `send_to_kindle return value: None` (success)
+
+The Selenium-level sequence inside step 3 (when LibGen is used): `choose_libgen_mirror` → `get_libgen_link` → `download_book_using_selenium` → "Starting Selenium download..." → "LibGen Selenium page attempt 1/2..." → "Selenium download completed..." → `sync_wrapper() return value` (confirms the function fully returned before the success log).
 
 ## Diagnosing a hung job
 
@@ -53,7 +60,7 @@ A healthy job produces these entries in order:
 **Check**: Is there a `sync_wrapper() return value` line for `download_book_using_selenium` after "Selenium download completed"?
 
 - **If yes** → hang is downstream (SMTP / `send_to_kindle`)
-- **If no** → the function's `finally` block is blocking before it returns. This was previously caused by `driver.quit()` hanging on the WebDriver HTTP teardown. If it recurs, check `_force_quit_driver()` in `download_with_libgen.py`.
+- **If no** → the function's `finally` block is blocking. Check `_force_quit_driver()` in `download_with_libgen.py` — it kills the geckodriver process directly; if the process is already gone it logs a warning and continues.
 
 ## Diagnosing a failed job
 
@@ -66,7 +73,8 @@ If `status=error` in the UI, look for `ERROR` or `WARNING` level lines for that 
 | `EmailDeliveryError` | Gmail SMTP failed; check Gmail app password |
 | `file size: 0.0KB` | File was deleted before `send_to_kindle` read it (race condition or cleanup ran early) |
 | `ManualDownloadRequiredError` | Selenium never detected a downloaded file after all attempts |
-| `No epub results for ISBN ... falling back to pdf` | Normal; epub unavailable, pdf used instead |
+| `LibGen download (epub) failed` | epub download failed; pdf fallback will be attempted next |
+| `All mobi conversions failed, sending raw .mobi` | Calibre could not convert mobi to epub or pdf; raw mobi sent to Kindle |
 
 ## Startup sequence (always present at boot)
 
