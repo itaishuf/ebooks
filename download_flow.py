@@ -218,13 +218,15 @@ async def _download_via_libgen(isbn: str, md5_list: list[str]) -> Path:
     return await asyncio.to_thread(download_book_using_selenium, url)
 
 
-async def _download_via_annas_archive(md5_list: list[str], on_status=None) -> Path:
+async def _download_via_annas_archive(
+    md5_list: list[str], isbn: str = "", on_status=None
+) -> Path:
     if on_status:
         on_status("trying_alternative")
     last_error: Exception | None = None
     for md5 in md5_list:
         try:
-            return await download_book_from_annas_archive(md5)
+            return await download_book_from_annas_archive(md5, isbn=isbn)
         except (DownloadError, Exception) as e:
             logger.warning(f"AA download failed for md5={md5}: {e}")
             last_error = e
@@ -341,7 +343,7 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
     # -- Anna's Archive: epub ------------------------------------------------
     if book_path is None and epub_hashes:
         try:
-            book_path = await _download_via_annas_archive(epub_hashes, on_status=_emit)
+            book_path = await _download_via_annas_archive(epub_hashes, isbn=isbn, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (epub): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -352,7 +354,7 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
     # -- Anna's Archive: pdf -------------------------------------------------
     if book_path is None and pdf_hashes:
         try:
-            book_path = await _download_via_annas_archive(pdf_hashes, on_status=_emit)
+            book_path = await _download_via_annas_archive(pdf_hashes, isbn=isbn, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (pdf): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -363,7 +365,7 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
     # -- Anna's Archive: mobi (convert to epub/pdf) --------------------------
     if book_path is None and mobi_hashes:
         try:
-            book_path = await _download_via_annas_archive(mobi_hashes, on_status=_emit)
+            book_path = await _download_via_annas_archive(mobi_hashes, isbn=isbn, on_status=_emit)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via Anna's Archive (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
             last_error = None

@@ -12,6 +12,9 @@ from utils import log_call
 
 logger = logging.getLogger(__name__)
 
+# Matches ISBN-13 (978/979 prefix) and ISBN-10 (9 digits + digit or X).
+_ISBN_RE = re.compile(r'\b(97[89]\d{10}|\d{9}[\dX])\b')
+
 # AA's countdown timer is ~60 s; 70 gives a buffer for slow page renders.
 AA_COUNTDOWN_WAIT_S = 70
 # Total FlareSolverr budget: DDoS-Guard JS challenge (~10 s) + countdown wait + network.
@@ -23,6 +26,11 @@ _BROWSER_HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
+
+
+def _page_isbns(html: str) -> list[str]:
+    """Return all ISBN-10 / ISBN-13 strings found in an AA MD5 page."""
+    return _ISBN_RE.findall(html)
 
 
 def _extract_filename(content_disposition: str, url: str, md5: str) -> str:
@@ -165,18 +173,28 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
 
 @log_call
-async def download_book_from_annas_archive(md5: str) -> Path:
+async def download_book_from_annas_archive(md5: str, isbn: str = "") -> Path:
     """Download an ebook from Anna's Archive.
 
     Strategy:
     1. Fetch the AA MD5 page once to extract both the IA link (if any) and the
        slow_download URL.
-    2. Try Internet Archive directly (fast, no bot protection) if an IA source is
+    2. If *isbn* is provided, verify it appears on the MD5 page before proceeding
+       (skips wrong-book results that slipped through the title search).
+    3. Try Internet Archive directly (fast, no bot protection) if an IA source is
        linked from the page.
-    3. Fall back to the FlareSolverr slow-download path + download-proxy sidecar
+    4. Fall back to the FlareSolverr slow-download path + download-proxy sidecar
        for books not on IA.
     """
     html = await _fetch_md5_page(md5)
+
+    if isbn:
+        page_isbns = _page_isbns(html)
+        if page_isbns and not any(isbn in p or p in isbn for p in page_isbns):
+            logger.warning(
+                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {isbn}, skipping"
+            )
+            raise DownloadError(f"ISBN mismatch on AA MD5 page for {md5}")
 
     ia_path = await _try_internet_archive(md5, html)
     if ia_path:

@@ -31,7 +31,7 @@ Common signals:
 ## Repo-specific guardrails
 
 - Use `uv run` for pytest and other Python commands
-- Do not start the FastAPI server, systemd service, E2E tests, or live `curl` requests unless the user explicitly asks
+- Do not start the FastAPI server, E2E tests, or live `curl` requests unless the user explicitly asks
 - Treat existing uncommitted user changes as real context; work with them instead of reverting them
 - If the plan affects auth, routes, or deployment docs, include a coordination note in the final response if another surface still needs follow-up
 

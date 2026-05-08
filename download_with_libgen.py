@@ -56,7 +56,8 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
     async with aiohttp.ClientSession() as session:
         pages = await asyncio.gather(*[_fetch_page(session, link) for link in active_links])
 
-    correct_active_links = []
+    isbn_confirmed: list[str] = []
+    isbn_unconfirmed: list[str] = []
     for link, page in zip(active_links, pages):
         soup = BeautifulSoup(page, 'html.parser')
         isbn_text = ""
@@ -65,11 +66,15 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
             if 'ISBN' in text:
                 isbn_text = text
                 break
-        if isbn in isbn_text or not isbn_text:
-            correct_active_links.append(link)
+        if isbn in isbn_text:
+            isbn_confirmed.append(link)
+        elif not isbn_text:
+            isbn_unconfirmed.append(link)
+        # else: page has ISBN metadata but wrong ISBN — skip
 
-    if not correct_active_links:
-        correct_active_links = active_links
+    # Prefer ISBN-confirmed links; fall back to pages without ISBN metadata;
+    # last resort: all active links (mirrors that didn't render metadata at all).
+    correct_active_links = isbn_confirmed or isbn_unconfirmed or active_links
     if not correct_active_links:
         raise BookNotFoundError(f"No libgen download found matching ISBN {isbn}")
     return correct_active_links[0]

@@ -6,7 +6,7 @@ alwaysApply: true
 # Project Architecture
 
 ## What this project does
-**Ebookarr** is a FastAPI + Alpine.js app that searches for ebooks, downloads them via Selenium/Firefox, and sends them to a Kindle email via Gmail SMTP. It can run under systemd or via Docker Compose behind a dedicated Tailscale Funnel node.
+**Ebookarr** is a FastAPI + Alpine.js app that searches for ebooks, downloads them via Selenium/Firefox, and sends them to a Kindle email via Gmail SMTP. It runs via Docker Compose behind a dedicated Tailscale Funnel node.
 
 ## Key files and their roles
 

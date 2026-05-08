@@ -5,6 +5,7 @@ import pytest
 from selenium.common.exceptions import WebDriverException
 
 import download_flow
+import download_with_annas_archive
 import download_with_libgen
 import service
 from exceptions import DownloadError, ManualDownloadRequiredError
@@ -295,3 +296,103 @@ async def test_ebook_download_by_md5_surfaces_manual_fallback(monkeypatch):
         )
 
     assert exc.value.fallback_url == "https://libgen.test/get.php?md5=md5"
+
+
+# ---------------------------------------------------------------------------
+# AA ISBN validation tests
+# ---------------------------------------------------------------------------
+
+_ISBN13 = "9780670016907"
+_ISBN10 = "0670016907"
+_OTHER_ISBN = "9780140449136"
+
+_HTML_WITH_ISBN13 = f"<html><body>ISBN: {_ISBN13}</body></html>"
+_HTML_WITH_ISBN10 = f"<html><body>ISBN: {_ISBN10}</body></html>"
+_HTML_WITH_WRONG_ISBN = f"<html><body>ISBN: {_OTHER_ISBN}</body></html>"
+_HTML_NO_ISBN = "<html><body>No metadata here.</body></html>"
+
+
+def test_page_isbns_finds_isbn13():
+    assert download_with_annas_archive._page_isbns(_HTML_WITH_ISBN13) == [_ISBN13]
+
+
+def test_page_isbns_finds_isbn10():
+    assert download_with_annas_archive._page_isbns(_HTML_WITH_ISBN10) == [_ISBN10]
+
+
+def test_page_isbns_empty_on_no_isbn():
+    assert download_with_annas_archive._page_isbns(_HTML_NO_ISBN) == []
+
+
+@pytest.mark.asyncio
+async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch):
+    """MD5 page with a different ISBN raises DownloadError without fetching further."""
+    async def fake_fetch(_md5):
+        return _HTML_WITH_WRONG_ISBN
+
+    monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
+
+    with pytest.raises(DownloadError, match="ISBN mismatch"):
+        await download_with_annas_archive.download_book_from_annas_archive(
+            "deadbeef", isbn=_ISBN13
+        )
+
+
+@pytest.mark.asyncio
+async def test_download_book_from_annas_archive_allows_matching_isbn13(monkeypatch, tmp_path):
+    """MD5 page whose ISBN-13 matches the target proceeds past the check."""
+    async def fake_fetch(_md5):
+        return _HTML_WITH_ISBN13
+
+    async def fake_try_ia(_md5, _html):
+        out = tmp_path / "book.epub"
+        out.write_bytes(b"epub-data")
+        return out
+
+    monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
+    monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
+
+    result = await download_with_annas_archive.download_book_from_annas_archive(
+        "deadbeef", isbn=_ISBN13
+    )
+    assert result.name == "book.epub"
+
+
+@pytest.mark.asyncio
+async def test_download_book_from_annas_archive_allows_isbn10_match(monkeypatch, tmp_path):
+    """ISBN-10 on the page matches an ISBN-13 target (substring check)."""
+    async def fake_fetch(_md5):
+        return _HTML_WITH_ISBN10
+
+    async def fake_try_ia(_md5, _html):
+        out = tmp_path / "book.epub"
+        out.write_bytes(b"epub-data")
+        return out
+
+    monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
+    monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
+
+    result = await download_with_annas_archive.download_book_from_annas_archive(
+        "deadbeef", isbn=_ISBN13
+    )
+    assert result.name == "book.epub"
+
+
+@pytest.mark.asyncio
+async def test_download_book_from_annas_archive_allows_no_isbn_on_page(monkeypatch, tmp_path):
+    """Page with no ISBN metadata is allowed through (graceful fallback)."""
+    async def fake_fetch(_md5):
+        return _HTML_NO_ISBN
+
+    async def fake_try_ia(_md5, _html):
+        out = tmp_path / "book.epub"
+        out.write_bytes(b"epub-data")
+        return out
+
+    monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
+    monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
+
+    result = await download_with_annas_archive.download_book_from_annas_archive(
+        "deadbeef", isbn=_ISBN13
+    )
+    assert result.name == "book.epub"
