@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, status
 
@@ -189,7 +190,14 @@ def _replace_emails(text: str) -> str:
 def _replace_urls(text: str) -> str:
     import re
 
-    return re.sub(r"https?://[^\s\"'>]+", URL_REPLACEMENT, text, flags=re.IGNORECASE)
+    def replace_url(match: re.Match[str]) -> str:
+        url = match.group(0)
+        parsed = urlsplit(url)
+        if parsed.hostname in {"goodreads.com", "www.goodreads.com"} and not parsed.query and not parsed.fragment:
+            return url
+        return URL_REPLACEMENT
+
+    return re.sub(r"https?://[^\s\"'>]+", replace_url, text, flags=re.IGNORECASE)
 
 
 def _replace_bearer_tokens(text: str) -> str:

@@ -1,32 +1,17 @@
 import asyncio
 import shutil
 
-import aiohttp
 import pytest
 
+from bitwarden import fetch_secrets
 from config import settings
+from exceptions import BitwardenError
 from runtime_bootstrap import bootstrap_annas_archive_url
 
 
 def _fail_e2e_prerequisites(messages: list[str]) -> None:
     formatted = "\n".join(f"- {message}" for message in messages)
     pytest.fail(f"E2E gate prerequisites not satisfied:\n{formatted}", pytrace=False)
-
-
-async def _check_goodreads_access() -> str | None:
-    timeout = aiohttp.ClientTimeout(total=10)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            settings.test_goodreads_url
-        ) as response:
-            if response.status != 200:
-                return (
-                    f"Goodreads test URL {settings.test_goodreads_url} returned HTTP "
-                    f"{response.status}"
-                )
-            return None
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-        return f"Goodreads test URL {settings.test_goodreads_url} is not reachable: {exc}"
 
 
 @pytest.fixture(scope="session")
@@ -36,10 +21,6 @@ def e2e_runtime_bootstrap():
         missing.append("`test_goodreads_url` is not configured")
     if missing:
         _fail_e2e_prerequisites(missing)
-
-    goodreads_error = asyncio.run(_check_goodreads_access())
-    if goodreads_error:
-        _fail_e2e_prerequisites([goodreads_error])
 
     bootstrap = asyncio.run(bootstrap_annas_archive_url())
     if bootstrap.used_fallback:
@@ -61,6 +42,11 @@ def _bootstrap_marked_e2e_tests(request):
 @pytest.fixture
 def delivery_prerequisites(e2e_runtime_bootstrap):
     missing = []
+    if not settings.gmail_password:
+        try:
+            fetch_secrets(settings)
+        except BitwardenError as exc:
+            missing.append(f"could not load `gmail_password` from Bitwarden: {exc}")
     if not settings.gmail_password:
         missing.append("`gmail_password` is not configured")
     if not settings.test_kindle_email:

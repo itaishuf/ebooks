@@ -12,6 +12,7 @@ from selenium import webdriver
 from selenium.common.exceptions import (
     ElementClickInterceptedException,
     NoSuchElementException,
+    TimeoutException,
     WebDriverException,
 )
 from selenium.webdriver.common.by import By
@@ -113,6 +114,8 @@ def download_book_using_selenium(url: str) -> Path:
     )
 
     driver = webdriver.Firefox(options=options)
+    if hasattr(driver, "set_page_load_timeout"):
+        driver.set_page_load_timeout(30)
     try:
         driver.get(url)
         button_xpath = "/html/body/table/tbody/tr[1]/td[2]/a"
@@ -150,7 +153,7 @@ def download_book_using_selenium(url: str) -> Path:
             fallback_url=url,
             fallback_message=fallback_message,
         )
-    except (NoSuchElementException, WebDriverException) as e:
+    except (NoSuchElementException, TimeoutException, WebDriverException) as e:
         raise DownloadError(f"Failed to download book from libgen: {e}") from e
     finally:
         _force_quit_driver(driver)

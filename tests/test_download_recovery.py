@@ -359,6 +359,35 @@ async def test_download_book_from_annas_archive_allows_matching_isbn13(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_search_books_uses_legacy_goodreads_results_endpoint(monkeypatch):
+    requested_urls = []
+
+    async def fake_fetch(url: str) -> str:
+        requested_urls.append(url)
+        return """
+            <tr itemtype="http://schema.org/Book">
+              <a class="bookTitle" href="/book/show/1-example">Example Book</a>
+              <a class="authorName">Example Author</a>
+              <img src="https://images.example/book._SX50_.jpg">
+            </tr>
+        """
+
+    monkeypatch.setattr(download_flow, "_fetch_page_with_retry", fake_fetch)
+
+    results = await download_flow.search_books("Example Book")
+
+    assert requested_urls == ["https://www.goodreads.com/search/index?q=Example+Book"]
+    assert results == [
+        {
+            "title": "Example Book",
+            "author": "Example Author",
+            "goodreads_url": "https://www.goodreads.com/book/show/1-example",
+            "cover_url": "https://images.example/book._SY475_.jpg",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_download_book_from_annas_archive_allows_isbn10_match(monkeypatch, tmp_path):
     """ISBN-10 on the page matches an ISBN-13 target (substring check)."""
     async def fake_fetch(_md5):

@@ -7,11 +7,13 @@ from config import settings
 from download_flow import ebook_download
 
 
-@pytest.mark.e2e
 @pytest.mark.asyncio
 async def test_file_type_fallback_to_pdf(monkeypatch):
     """ebook_download falls back to pdf when no epub results are available."""
     statuses = []
+
+    async def fake_get_book_info(_url: str) -> dict[str, str]:
+        return {"isbn": "9780141439600", "title": "Test Book"}
 
     async def fake_search_aa_all_formats(_isbn, title=""):
         return {"epub": [], "pdf": ["pdf-md5"], "mobi": []}
@@ -22,13 +24,14 @@ async def test_file_type_fallback_to_pdf(monkeypatch):
     def fake_send_to_kindle(_email: str, book_path: Path | None = None, book_data: bytes = b"", filename: str = ""):
         return None
 
+    monkeypatch.setattr(download_flow, "get_book_info", fake_get_book_info)
     monkeypatch.setattr(download_flow, "search_aa_all_formats", fake_search_aa_all_formats)
     monkeypatch.setattr(download_flow, "_download_via_libgen", fake_download_via_libgen)
     monkeypatch.setattr(download_flow, "send_to_kindle", fake_send_to_kindle)
 
     await ebook_download(
-        settings.test_goodreads_url,
-        settings.test_kindle_email,
+        "https://www.goodreads.com/book/show/2657.To_Kill_a_Mockingbird",
+        "test@example.com",
         on_status=statuses.append,
     )
 

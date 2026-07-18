@@ -1,8 +1,9 @@
 import logging
 from dataclasses import dataclass
 
+import aiohttp
+
 from config import settings
-from download_with_libgen import gather_page_status
 
 logger = logging.getLogger(__name__)
 
@@ -17,9 +18,22 @@ class AnnasArchiveBootstrapResult:
         return self.healthy_url is None
 
 
+async def _find_healthy_annas_archive_mirror() -> str | None:
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for mirror in settings.annas_archive_mirrors:
+            try:
+                async with session.get(f"{mirror}/search?q=the") as response:
+                    page = await response.text()
+            except (aiohttp.ClientError, TimeoutError):
+                continue
+            if response.status == 200 and "/md5/" in page:
+                return mirror
+    return None
+
+
 async def bootstrap_annas_archive_url() -> AnnasArchiveBootstrapResult:
-    status = await gather_page_status(settings.annas_archive_mirrors)
-    mirror = next((url for url in status if url), None)
+    mirror = await _find_healthy_annas_archive_mirror()
     if mirror:
         settings.annas_archive_url = mirror
         logger.info(f"Anna's Archive mirror selected: {mirror}")

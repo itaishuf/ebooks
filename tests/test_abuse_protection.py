@@ -47,6 +47,21 @@ def test_sanitize_for_log_can_allow_emails_for_intentional_logs():
     assert "[redacted-secret]" in sanitized
 
 
+def test_sanitize_for_log_preserves_public_goodreads_paths_only():
+    message = (
+        "book https://www.goodreads.com/book/show/42046112-recursion "
+        "search https://www.goodreads.com/search?q=private-query "
+        "download https://downloads.example/file?token=secret"
+    )
+
+    sanitized = sanitize_for_log(message)
+
+    assert "https://www.goodreads.com/book/show/42046112-recursion" in sanitized
+    assert "https://www.goodreads.com/search?q=private-query" not in sanitized
+    assert "https://downloads.example/file?token=secret" not in sanitized
+    assert sanitized.count("[redacted-url]") == 2
+
+
 def test_cleanup_expired_jobs_removes_only_old_terminal_jobs():
     jobs = {
         "old-done": {"status": "done", "finished_at_epoch": 10.0},

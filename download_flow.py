@@ -7,7 +7,7 @@ import smtplib
 import time
 from email.message import EmailMessage
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode, urlsplit
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -46,6 +46,28 @@ async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
     raise last_error
 
 
+async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
+    """Retrieve a Goodreads page through FlareSolverr when direct access is blocked."""
+    hostname = urlsplit(url).hostname
+    if hostname not in {"goodreads.com", "www.goodreads.com"}:
+        return ""
+
+    payload = {"cmd": "request.get", "url": url, "maxTimeout": 60_000}
+    timeout = aiohttp.ClientTimeout(total=70)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+            f"{settings.flaresolverr_url}/v1", json=payload
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        logger.warning(f"FlareSolverr could not fetch Goodreads page: {exc}")
+        return ""
+
+    page = data.get("solution", {}).get("response", "")
+    return page if data.get("status") == "ok" and isinstance(page, str) else ""
+
+
 @log_call
 async def get_book_info(url: str) -> dict[str, str]:
     """Extract ISBN and title from a Goodreads book page.
@@ -73,10 +95,24 @@ async def get_book_info(url: str) -> dict[str, str]:
             continue
 
     if not isbn:
-        match = re.search(r'isbn.{0,5}(\d{10,13})', text, re.IGNORECASE)
+        match = re.search(r"isbn\D{0,200}(\d{10,13})", text, re.IGNORECASE)
         if not match:
-            raise BookNotFoundError(f"No ISBN found on page: {url}")
-        isbn = match.group(1)
+            text = await _fetch_goodreads_page_with_flaresolverr(url)
+            soup = BeautifulSoup(text, 'html.parser')
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    data = json.loads(script.string)
+                    if not isbn:
+                        isbn = data.get('isbn', '')
+                    if not title:
+                        title = data.get('name', '')
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    continue
+            match = re.search(r"isbn\D{0,200}(\d{10,13})", text, re.IGNORECASE)
+            if not isbn and not match:
+                raise BookNotFoundError(f"No ISBN found on page: {url}")
+        if not isbn:
+            isbn = match.group(1)
 
     if not title:
         og_title = soup.find('meta', property='og:title')
@@ -188,7 +224,9 @@ def _parse_aa_search_results(html: str) -> dict[str, list[str]]:
 
 @log_call
 async def search_books(query: str) -> list[dict]:
-    url = f'https://www.goodreads.com/search?q={quote(query)}'
+    # Goodreads serves challenge pages from /search but keeps the legacy
+    # server-rendered results needed by this parser at /search/index.
+    url = f"https://www.goodreads.com/search/index?{urlencode({'q': query})}"
     text = await _fetch_page_with_retry(url)
     soup = BeautifulSoup(text, 'html.parser')
 
