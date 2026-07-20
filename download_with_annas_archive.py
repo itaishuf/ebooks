@@ -49,6 +49,7 @@ async def _fetch_md5_page(md5: str) -> str:
     logger.info(f"Fetching AA MD5 page for md5={md5}")
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         async with session.get(md5_url, allow_redirects=True) as resp:
+            logger.info(f"Anna MD5 decision response_status={resp.status}")
             return await resp.text()
 
 
@@ -63,11 +64,11 @@ async def _try_internet_archive(md5: str, html: str) -> Path | None:
     soup = BeautifulSoup(html, "html.parser")
     ia_link = soup.find("a", href=re.compile(r"https://archive\.org/details/([^/?#]+)"))
     if not ia_link:
-        logger.info(f"No Internet Archive source on AA MD5 page for md5={md5}")
+        logger.info(f"Anna MD5 decision internet_archive=absent md5={md5}")
         return None
 
     item_id = re.search(r"https://archive\.org/details/([^/?#]+)", ia_link["href"]).group(1)
-    logger.info(f"Found Internet Archive item for md5={md5}: {item_id}")
+    logger.info(f"Anna MD5 decision internet_archive=present md5={md5} next=epub_then_pdf")
 
     output_dir = Path(settings.download_dir) / f"aa-{md5[:8]}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +87,7 @@ async def _try_internet_archive(md5: str, html: str) -> Path | None:
                         size_kb = round(file_path.stat().st_size / 1000, 1)
                         logger.info(f"IA download complete: {file_path.name} ({size_kb} KB)")
                         return file_path
-                    logger.info(f"IA returned HTTP {resp.status} for {ia_url}")
+                    logger.info(f"Anna MD5 decision internet_archive format={ext} response_status={resp.status}")
         except Exception as e:
             logger.warning(f"IA download failed for {ia_url}: {e}")
 
@@ -104,7 +105,7 @@ def _get_slow_download_url(md5: str, html: str) -> str:
 
     href = link["href"]
     url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
-    logger.info(f"Found AA slow_download URL for md5={md5}: {url}")
+    logger.info(f"Anna MD5 decision internet_archive=absent next=slow_partner md5={md5}")
     return url
 
 
@@ -114,7 +115,7 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
     Returns (all_cookies, user_agent, absolute_download_url).
     """
-    logger.info(f"Sending AA slow-download URL to FlareSolverr: {slow_url}")
+    logger.info(f"Anna partner decision flaresolverr=attempt md5={md5}")
 
     async with aiohttp.ClientSession() as session:
         resp = await session.post(
@@ -130,6 +131,7 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
     status = data.get("status")
     if status != "ok":
+        logger.warning(f"Anna partner decision flaresolverr=failed status={status!r} md5={md5}")
         raise DownloadError(
             f"FlareSolverr returned status={status!r} for md5={md5}: {data.get('message', '')}"
         )
@@ -166,7 +168,7 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
     href = btn["href"]
     download_url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
-    logger.info(f"Extracted AA download URL for md5={md5}: {download_url}")
+    logger.info(f"Anna partner decision flaresolverr=success md5={md5} next=proxy")
     # Return all cookies — DDoS-Guard uses __ddg* names, not cf_clearance.
     logger.info(f"FlareSolverr cookies for md5={md5}: {list(all_cookies.keys())}")
     return all_cookies, user_agent, download_url
@@ -195,12 +197,16 @@ async def download_book_from_annas_archive(md5: str, isbn: str = "") -> Path:
                 f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {isbn}, skipping"
             )
             raise DownloadError(f"ISBN mismatch on AA MD5 page for {md5}")
+        logger.info(
+            f"Anna MD5 decision isbn_validation={'matched' if page_isbns else 'unavailable'} md5={md5}"
+        )
 
     ia_path = await _try_internet_archive(md5, html)
     if ia_path:
+        logger.info(f"Anna MD5 decision source=internet_archive outcome=success md5={md5}")
         return ia_path
 
-    logger.info(f"No IA source for md5={md5}, falling back to AA slow download via FlareSolverr")
+    logger.info(f"Anna MD5 decision source=slow_partner reason=internet_archive_unavailable md5={md5}")
     slow_url = _get_slow_download_url(md5, html)
     all_cookies, user_agent, download_url = await _solve_and_get_download_link(md5, slow_url)
 
@@ -234,5 +240,5 @@ async def download_book_from_annas_archive(md5: str, isbn: str = "") -> Path:
             file_path.write_bytes(await resp.read())
 
     size_kb = round(file_path.stat().st_size / 1000, 1)
-    logger.info(f"AA download complete: {file_path.name} ({size_kb} KB)")
+    logger.info(f"Anna MD5 decision source=proxy outcome=success size_kb={size_kb}")
     return file_path

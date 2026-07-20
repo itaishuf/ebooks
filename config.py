@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Google OAuth / Session Auth
     google_client_id: str = ""
     google_client_secret_bw_item_id: str = ""
+    google_books_api_key_bw_item_id: str = ""
     session_secret_bw_item_id: str = ""
     app_base_url: str = "http://localhost:19191"
     session_cookie_name: str = "ebookarr_session"
@@ -111,6 +112,7 @@ class Settings(BaseSettings):
     # Runtime application secrets (populated from Bitwarden item IDs at startup)
     gmail_password: str = ""
     google_client_secret: str = ""
+    google_books_api_key: str = ""
     session_secret: str = ""
     api_token: str = ""
 

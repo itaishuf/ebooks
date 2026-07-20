@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlencode, urlsplit
 from uuid import UUID, uuid4
 
@@ -46,7 +47,13 @@ from auth import (
 )
 from bitwarden import fetch_secrets
 from config import settings
-from download_flow import ebook_download, ebook_download_by_md5, search_books
+from download_flow import (
+    ebook_download,
+    ebook_download_by_md5,
+    ebook_download_from_annas_md5,
+    ebook_download_from_metadata,
+    search_books,
+)
 from exceptions import (
     BitwardenError,
     BookNotFoundError,
@@ -242,6 +249,13 @@ class DownloadRequest(BaseModel):
 
 class Md5DownloadRequest(BaseModel):
     md5: str = Field(pattern=r'^[0-9a-fA-F]{32}$')
+    source: Literal["libgen", "annas_archive"] = "libgen"
+    kindle_mail: EmailStr
+
+
+class MetadataDownloadRequest(BaseModel):
+    isbn: str = Field(pattern=r"^(?:97[89]\d{10}|\d{9}[\dX])$")
+    title: str = Field(min_length=1, max_length=500)
     kindle_mail: EmailStr
 
 
@@ -271,6 +285,15 @@ def _make_job(owner: AuthenticatedUser | None = None, client_ip: str | None = No
         "client_ip": client_ip,
     }
     return job_id
+
+
+def _set_job_status(job_id: str, status: str) -> None:
+    job = jobs.get(job_id)
+    if job is None:
+        return
+    previous_status = job["status"]
+    job["status"] = status
+    logger.info(f"Job decision transition={previous_status}->{status}")
 
 
 def _job_error_update(error: Exception) -> dict:
@@ -364,12 +387,15 @@ async def _run_job(job_id: str, coro) -> None:
     try:
         await coro
         jobs[job_id]["finished_at_epoch"] = time.time()
+        logger.info("Job decision terminal=done")
     except (InvalidURLError, BookNotFoundError) as e:
         logger.warning(f"Job failed with a request error: {sanitize_error_detail(e, 'Request failed')}")
         jobs[job_id].update(_job_error_update(e))
+        logger.info(f"Job decision terminal=error category=request type={e.__class__.__name__}")
     except (EmailDeliveryError, DownloadError) as e:
         logger.error(f"Job failed while downloading or sending: {sanitize_error_detail(e, 'Download failed')}")
         jobs[job_id].update(_job_error_update(e))
+        logger.info(f"Job decision terminal=error category=download_or_delivery type={e.__class__.__name__}")
     except aiohttp.ClientError as e:
         logger.error(f"Network error while processing job: {sanitize_error_detail(e, 'External service unavailable')}")
         jobs[job_id].update(
@@ -378,6 +404,7 @@ async def _run_job(job_id: str, coro) -> None:
             fallback=None,
             finished_at_epoch=time.time(),
         )
+        logger.info("Job decision terminal=error category=network")
     except Exception as e:
         logger.error(f"Unexpected job failure {e.__class__.__name__}: {sanitize_error_detail(e, 'Unexpected error')}")
         jobs[job_id].update(
@@ -386,6 +413,7 @@ async def _run_job(job_id: str, coro) -> None:
             fallback=None,
             finished_at_epoch=time.time(),
         )
+        logger.info(f"Job decision terminal=error category=unexpected type={e.__class__.__name__}")
 
 
 @app.get('/')
@@ -542,16 +570,76 @@ async def download_from_goodreads(
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
     job_id = _make_job(user, client_ip=client_ip)
-    logger.info(f"Created Goodreads download job for {user.user_id}")
+    logger.info(
+        f"Download routing decision source=goodreads_url user={user.user_id} "
+        f"url={payload.goodreads_url}"
+    )
 
     def on_status(s):
-        if job_id in jobs:
-            jobs[job_id]["status"] = s
+        _set_job_status(job_id, s)
 
     asyncio.create_task(
         _run_download_job(
             job_id,
             lambda: ebook_download(str(payload.goodreads_url), payload.kindle_mail, on_status=on_status),
+        )
+    )
+    return {"job_id": job_id}
+
+
+@app.post('/download/isbn')
+async def download_from_metadata(
+    http_request: Request,
+    payload: MetadataDownloadRequest,
+    user: AuthenticatedUser = authenticated_user_dependency,
+):
+    _perform_maintenance()
+    if not is_api_token_request(http_request):
+        _enforce_same_origin(http_request)
+    client_ip = extract_client_ip(http_request, settings.trusted_proxy_ips)
+    _enforce_endpoint_rate_limits(
+        endpoint_name="download",
+        ip_policy=RateLimitPolicy(
+            name="download:ip",
+            limit=settings.download_rate_limit_per_ip,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        user_policy=RateLimitPolicy(
+            name="download:user",
+            limit=settings.download_rate_limit_per_user,
+            window_seconds=settings.download_rate_limit_window_seconds,
+        ),
+        client_ip=client_ip,
+        user=user,
+    )
+    enforce_job_admission(
+        jobs,
+        user_id=user.user_id,
+        client_ip=client_ip,
+        max_in_flight_jobs=settings.max_in_flight_jobs,
+        max_queued_jobs=settings.max_queued_jobs,
+        max_jobs_per_user=settings.max_jobs_per_user,
+        max_jobs_per_ip=settings.max_jobs_per_ip,
+        retry_after_seconds=settings.overload_retry_after_seconds,
+    )
+    job_id = _make_job(user, client_ip=client_ip)
+    logger.info(
+        f"Download routing decision source=google_books_metadata user={user.user_id} "
+        f"isbn={payload.isbn} title={payload.title!r}"
+    )
+
+    def on_status(status):
+        _set_job_status(job_id, status)
+
+    asyncio.create_task(
+        _run_download_job(
+            job_id,
+            lambda: ebook_download_from_metadata(
+                payload.isbn,
+                payload.title,
+                payload.kindle_mail,
+                on_status=on_status,
+            ),
         )
     )
     return {"job_id": job_id}
@@ -593,16 +681,19 @@ async def download_from_md5(
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
     job_id = _make_job(user, client_ip=client_ip)
-    logger.info(f"Created MD5 download job for {user.user_id}")
+    logger.info(f"Created MD5 download job source={payload.source} for {user.user_id}")
 
     def on_status(s):
-        if job_id in jobs:
-            jobs[job_id]["status"] = s
+        _set_job_status(job_id, s)
 
     asyncio.create_task(
         _run_download_job(
             job_id,
-            lambda: ebook_download_by_md5(payload.md5, payload.kindle_mail, on_status=on_status),
+            lambda: (
+                ebook_download_from_annas_md5(payload.md5, payload.kindle_mail, on_status=on_status)
+                if payload.source == "annas_archive"
+                else ebook_download_by_md5(payload.md5, payload.kindle_mail, on_status=on_status)
+            ),
         )
     )
     return {"job_id": job_id}

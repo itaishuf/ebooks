@@ -1571,7 +1571,7 @@
                     @click="scrollCarousel(-1)"
                     aria-label="Scroll left">&lsaquo;</button>
             <div class="carousel">
-              <template x-for="(r, index) in searchResults" :key="r.goodreads_url">
+              <template x-for="(r, index) in searchResults" :key="r.source + ':' + (r.md5 || r.isbn)">
                 <div class="carousel-item"
                      :style="'animation-delay:' + (index * 0.07) + 's'"
                      @click="confirmBook = r">
@@ -2004,10 +2004,13 @@
         async downloadFromSearch(result) {
           const savedResults = [...this.searchResults];
           try {
-            const res = await this.authFetch('/download', {
+            const isAnnaResult = result.source === 'annas_archive';
+            const res = await this.authFetch(isAnnaResult ? '/download/md5' : '/download/isbn', {
               method: 'POST',
               body: JSON.stringify({
-                goodreads_url: result.goodreads_url,
+                ...(isAnnaResult
+                  ? { md5: result.md5, source: 'annas_archive' }
+                  : { isbn: result.isbn, title: result.title }),
                 kindle_mail: this.kindleMail,
               }),
             });

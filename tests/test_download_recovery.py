@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -359,32 +360,159 @@ async def test_download_book_from_annas_archive_allows_matching_isbn13(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_search_books_uses_legacy_goodreads_results_endpoint(monkeypatch):
-    requested_urls = []
+async def test_search_books_uses_google_books_metadata(monkeypatch, caplog):
+    async def fake_fetch(_query: str) -> list[dict]:
+        return [
+            {
+                "volumeInfo": {
+                    "title": "Example Book",
+                    "authors": ["Example Author"],
+                    "industryIdentifiers": [{"type": "ISBN_13", "identifier": "978-0-123456-47-2"}],
+                    "imageLinks": {"thumbnail": "http://images.example/book.jpg"},
+                    "language": "en",
+                }
+            }
+        ]
 
-    async def fake_fetch(url: str) -> str:
-        requested_urls.append(url)
-        return """
-            <tr itemtype="http://schema.org/Book">
-              <a class="bookTitle" href="/book/show/1-example">Example Book</a>
-              <a class="authorName">Example Author</a>
-              <img src="https://images.example/book._SX50_.jpg">
-            </tr>
-        """
-
-    monkeypatch.setattr(download_flow, "_fetch_page_with_retry", fake_fetch)
+    monkeypatch.setattr(download_flow, "_fetch_google_books_search", fake_fetch)
+    caplog.set_level(logging.INFO, logger="download_flow")
 
     results = await download_flow.search_books("Example Book")
 
-    assert requested_urls == ["https://www.goodreads.com/search/index?q=Example+Book"]
     assert results == [
         {
             "title": "Example Book",
             "author": "Example Author",
-            "goodreads_url": "https://www.goodreads.com/book/show/1-example",
-            "cover_url": "https://images.example/book._SY475_.jpg",
+            "isbn": "9780123456472",
+            "cover_url": "https://images.example/book.jpg",
+            "md5": "",
+            "format": "",
+            "language": "en",
+            "source": "google_books",
         }
     ]
+    assert "Google Books ISBN decisions volumes=1 selected=1" in caplog.text
+    assert "language_codes=['en']" in caplog.text
+
+
+_AA_METADATA_HTML = """
+<div class="js-aarecord-list-outer">
+  <div class="flex">
+    <a href="/md5/0123456789abcdef0123456789abcdef"></a>
+    <div>
+      <a class="text-lg">הביתה</a>
+      <a class="text-sm">אסף ענברי</a>
+      <div class="text-gray-800 font-semibold text-sm">Hebrew [he] · EPUB · 0.6MB</div>
+    </div>
+  </div>
+</div>
+<div class="js-aarecord-list-outer">
+  <div class="flex">
+    <a href="/md5/0123456789abcdef0123456789abcdef"></a>
+    <div>
+      <a class="text-lg">Duplicate</a>
+      <a class="text-sm">Duplicate Author</a>
+      <div class="text-gray-800 font-semibold text-sm">English [en] · EPUB</div>
+    </div>
+  </div>
+</div>
+<div class="js-aarecord-list-outer">
+  <div class="flex">
+    <a href="/md5/fedcba98765432100123456789abcdef"></a>
+    <div>
+      <a class="text-lg">No Format</a>
+      <a class="text-sm">Unknown</a>
+    </div>
+  </div>
+</div>
+"""
+
+
+def test_parse_aa_metadata_results_returns_unique_supported_records():
+    assert download_flow._parse_aa_metadata_results(_AA_METADATA_HTML) == [
+        {
+            "title": "הביתה",
+            "author": "אסף ענברי",
+            "isbn": "",
+            "cover_url": "",
+            "md5": "0123456789abcdef0123456789abcdef",
+            "format": "epub",
+            "language": "he",
+            "source": "annas_archive",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_books_falls_back_to_aa_when_google_has_no_isbn(monkeypatch):
+    async def fake_google_search(_query: str) -> list[dict]:
+        return [{"volumeInfo": {"title": "No ISBN", "industryIdentifiers": []}}]
+
+    async def fake_aa_search(query: str) -> list[dict]:
+        assert query == "הביתה אסף ענברי"
+        return [{"title": "הביתה", "md5": "0123456789abcdef0123456789abcdef"}]
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_search", fake_google_search)
+    monkeypatch.setattr(download_flow, "_search_aa_metadata", fake_aa_search)
+
+    assert await download_flow.search_books("הביתה אסף ענברי") == [
+        {"title": "הביתה", "md5": "0123456789abcdef0123456789abcdef"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
+    statuses = []
+    sent_paths = []
+
+    async def fake_download(_md5: str) -> Path:
+        return Path("/tmp/hebrew-book.epub")
+
+    def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
+        sent_paths.append(book_path)
+
+    monkeypatch.setattr(download_flow, "download_book_from_annas_archive", fake_download)
+    monkeypatch.setattr(download_flow, "send_to_kindle", fake_send)
+
+    await download_flow.ebook_download_from_annas_md5(
+        "0123456789abcdef0123456789abcdef",
+        "reader@example.com",
+        on_status=statuses.append,
+    )
+
+    assert statuses == ["downloading", "sending", "done"]
+    assert sent_paths == [Path("/tmp/hebrew-book.epub")]
+
+
+@pytest.mark.asyncio
+async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
+    sent_paths = []
+
+    async def fake_aa_download(_md5: str) -> Path:
+        raise DownloadError("Anna CDN unavailable")
+
+    async def fake_libgen_download(isbn: str, md5_list: list[str]) -> Path:
+        assert isbn == "0123456789abcdef0123456789abcdef"
+        assert md5_list == ["0123456789abcdef0123456789abcdef"]
+        return Path("/tmp/libgen-book.epub")
+
+    def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
+        sent_paths.append(book_path)
+
+    async def no_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr(download_flow, "download_book_from_annas_archive", fake_aa_download)
+    monkeypatch.setattr(download_flow, "_download_via_libgen", fake_libgen_download)
+    monkeypatch.setattr(download_flow, "send_to_kindle", fake_send)
+    monkeypatch.setattr(download_flow.asyncio, "sleep", no_sleep)
+
+    await download_flow.ebook_download_from_annas_md5(
+        "0123456789abcdef0123456789abcdef",
+        "reader@example.com",
+    )
+
+    assert sent_paths == [Path("/tmp/libgen-book.epub")]
 
 
 @pytest.mark.asyncio

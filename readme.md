@@ -32,6 +32,7 @@ Application secrets are fetched from a Bitwarden vault at startup. In production
 | ------------------------- | ----------------------------- |
 | `Ebookarr`                | Gmail app password            |
 | `Ebookarr Google OAuth`   | Google OAuth client secret    |
+| `Ebookarr Google Books`   | Google Books API key          |
 | `Ebookarr Session Secret` | Random session signing secret |
 
 
@@ -61,8 +62,9 @@ Sign-in now uses server-owned Google OAuth plus a signed cookie session. Before 
   - `https://itai-books.<tailnet>.ts.net` for Funnel
   - `http://localhost:19191` for local development
 3. Store the Google client secret in Bitwarden and set `GOOGLE_CLIENT_SECRET_BW_ITEM_ID`.
-4. Store a random session-signing secret in Bitwarden and set `SESSION_SECRET_BW_ITEM_ID`.
-5. For HTTPS deployments such as Funnel, set `SESSION_HTTPS_ONLY=true`.
+4. Store a Google Books API key in Bitwarden and set `GOOGLE_BOOKS_API_KEY_BW_ITEM_ID`.
+5. Store a random session-signing secret in Bitwarden and set `SESSION_SECRET_BW_ITEM_ID`.
+6. For HTTPS deployments such as Funnel, set `SESSION_HTTPS_ONLY=true`.
 
 ### Gmail Configuration
 
@@ -180,6 +182,7 @@ The production `.env` file is intentionally small and typically contains Bitward
 | `APP_BASE_URL`                    | Yes                                               | `http://localhost:19191` | Public browser origin used for OAuth callback and same-origin checks |
 | `GOOGLE_CLIENT_ID`                | Yes                                               | -                        | Google OAuth client ID                                               |
 | `GOOGLE_CLIENT_SECRET_BW_ITEM_ID` | Yes unless `GOOGLE_CLIENT_SECRET` is set directly | -                        | Bitwarden item ID containing the Google OAuth client secret          |
+| `GOOGLE_BOOKS_API_KEY_BW_ITEM_ID` | Yes                                               | -                        | Bitwarden item ID containing the Google Books API key                |
 | `SESSION_SECRET_BW_ITEM_ID`       | Yes unless `SESSION_SECRET` is set directly       | -                        | Bitwarden item ID containing the signed-session secret               |
 | `SESSION_HTTPS_ONLY`              | No                                                | `false`                  | Set to `true` for HTTPS deployments such as Tailscale Funnel         |
 
@@ -208,6 +211,7 @@ Runtime secrets are fetched from Bitwarden at startup and should not be stored o
 | ---------------------- | --------------------------------- | ------------------------- |
 | `GMAIL_PASSWORD`       | `gmail_password_bw_item_id`       | `Ebookarr`                |
 | `GOOGLE_CLIENT_SECRET` | `google_client_secret_bw_item_id` | `Ebookarr Google OAuth`   |
+| `GOOGLE_BOOKS_API_KEY` | `google_books_api_key_bw_item_id` | `Ebookarr Google Books`   |
 | `SESSION_SECRET`       | `session_secret_bw_item_id`       | `Ebookarr Session Secret` |
 
 

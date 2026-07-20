@@ -48,6 +48,7 @@ def test_fetch_secrets_full_startup_flow(mock_run):
         item_passwords={
             "gmail-item-id": "gmail-pass",
             "google-item-id": "google-secret",
+            "google-books-item-id": "google-books-key",
             "session-item-id": "session-secret",
         },
     )
@@ -59,15 +60,18 @@ def test_fetch_secrets_full_startup_flow(mock_run):
     mock_settings.bw_master_password = "master-pass"
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
     mock_settings.google_client_secret_bw_item_id = "google-item-id"
+    mock_settings.google_books_api_key_bw_item_id = "google-books-item-id"
     mock_settings.session_secret_bw_item_id = "session-item-id"
     mock_settings.gmail_password = ""
     mock_settings.google_client_secret = ""
+    mock_settings.google_books_api_key = ""
     mock_settings.session_secret = ""
 
     fetch_secrets(mock_settings)
 
     assert mock_settings.gmail_password == "gmail-pass"
     assert mock_settings.google_client_secret == "google-secret"
+    assert mock_settings.google_books_api_key == "google-books-key"
     assert mock_settings.session_secret == "session-secret"
 
     login_call = next(c for c in mock_run.call_args_list if c.args[0][1] == "login")
@@ -87,9 +91,11 @@ def test_fetch_secrets_locks_vault_on_failure(mock_login, mock_unlock, mock_get,
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
     mock_settings.google_client_secret_bw_item_id = ""
+    mock_settings.google_books_api_key_bw_item_id = ""
     mock_settings.session_secret_bw_item_id = ""
     mock_settings.gmail_password = ""
     mock_settings.google_client_secret = ""
+    mock_settings.google_books_api_key = ""
     mock_settings.session_secret = ""
 
     with pytest.raises(BitwardenError):
@@ -108,9 +114,11 @@ def test_fetch_secrets_skips_bitwarden_when_runtime_secrets_are_already_loaded(
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
     mock_settings.google_client_secret_bw_item_id = "google-item-id"
+    mock_settings.google_books_api_key_bw_item_id = "google-books-item-id"
     mock_settings.session_secret_bw_item_id = "session-item-id"
     mock_settings.gmail_password = "already-set"
     mock_settings.google_client_secret = "already-set"
+    mock_settings.google_books_api_key = "already-set"
     mock_settings.session_secret = "already-set"
 
     fetch_secrets(mock_settings)
@@ -131,9 +139,11 @@ def test_fetch_secrets_skips_empty_item_ids(mock_login, mock_unlock, mock_get, m
     mock_settings = MagicMock()
     mock_settings.gmail_password_bw_item_id = "gmail-item-id"
     mock_settings.google_client_secret_bw_item_id = ""
+    mock_settings.google_books_api_key_bw_item_id = ""
     mock_settings.session_secret_bw_item_id = ""
     mock_settings.gmail_password = ""
     mock_settings.google_client_secret = ""
+    mock_settings.google_books_api_key = ""
     mock_settings.session_secret = ""
 
     fetch_secrets(mock_settings)

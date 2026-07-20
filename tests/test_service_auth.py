@@ -293,6 +293,32 @@ def test_download_creates_user_owned_job(client, monkeypatch):
     assert service.jobs[job_id]["client_ip"] == "testclient"
 
 
+def test_isbn_download_creates_user_owned_job(client, monkeypatch):
+    _sign_in_browser(client, monkeypatch, user_id="user-1")
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download_from_metadata", lambda *_args, **_kwargs: None)
+
+    response = client.post(
+        "/download/isbn",
+        json={
+            "isbn": "9780743273565",
+            "title": "The Great Gatsby",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_same_origin_headers(),
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    assert service.jobs[job_id]["owner_user_id"] == "user-1"
+    assert service.jobs[job_id]["owner_email"] == "reader@example.com"
+
+
 def test_download_md5_uses_post_body(client, monkeypatch):
     _sign_in_browser(client, monkeypatch, user_id="user-1")
 
@@ -315,6 +341,47 @@ def test_download_md5_uses_post_body(client, monkeypatch):
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     assert service.jobs[job_id]["owner_user_id"] == "user-1"
+
+
+def test_download_md5_routes_anna_source_to_anna_downloader(client, monkeypatch):
+    _sign_in_browser(client, monkeypatch, user_id="user-1")
+
+    def fake_create_task(coro):
+        coro.close()
+        return None
+
+    monkeypatch.setattr(service.asyncio, "create_task", fake_create_task)
+    monkeypatch.setattr(service, "ebook_download_from_annas_md5", lambda *_args, **_kwargs: None)
+
+    response = client.post(
+        "/download/md5",
+        json={
+            "md5": "0123456789abcdef0123456789abcdef",
+            "source": "annas_archive",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_same_origin_headers(),
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    assert service.jobs[job_id]["owner_user_id"] == "user-1"
+
+
+def test_download_md5_rejects_unknown_source(client, monkeypatch):
+    _sign_in_browser(client, monkeypatch, user_id="user-1")
+
+    response = client.post(
+        "/download/md5",
+        json={
+            "md5": "0123456789abcdef0123456789abcdef",
+            "source": "untrusted",
+            "kindle_mail": "reader@example.com",
+        },
+        headers=_same_origin_headers(),
+    )
+
+    assert response.status_code == 422
 
 
 def test_download_rejects_cross_origin_when_authenticated(client, monkeypatch):
