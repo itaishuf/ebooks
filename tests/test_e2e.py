@@ -13,12 +13,12 @@ async def test_file_type_fallback_to_pdf(monkeypatch):
     statuses = []
 
     async def fake_get_book_info(_url: str) -> dict[str, str]:
-        return {"isbn": "9780141439600", "title": "Test Book"}
+        return {"isbn": "9780141439600", "title": "Test Book", "author": "Test Author"}
 
     async def fake_search_aa_all_formats(_isbn, title=""):
         return {"epub": [], "pdf": ["pdf-md5"], "mobi": []}
 
-    async def fake_download_via_libgen(_isbn: str, _md5_list: list[str]) -> Path:
+    async def fake_download_via_libgen(_isbn: str, _md5_list: list[str], **kwargs) -> Path:
         return Path("/tmp/fallback.pdf")
 
     def fake_send_to_kindle(_email: str, book_path: Path | None = None, book_data: bytes = b"", filename: str = ""):

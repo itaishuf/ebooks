@@ -2010,7 +2010,7 @@
               body: JSON.stringify({
                 ...(isAnnaResult
                   ? { md5: result.md5, source: 'annas_archive' }
-                  : { isbn: result.isbn, title: result.title }),
+                  : { isbn: result.isbn, title: result.title, author: result.author || '' }),
                 kindle_mail: this.kindleMail,
               }),
             });

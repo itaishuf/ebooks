@@ -9,7 +9,7 @@ import download_flow
 import download_with_annas_archive
 import download_with_libgen
 import service
-from exceptions import DownloadError, ManualDownloadRequiredError
+from exceptions import BookNotFoundError, DownloadError, ManualDownloadRequiredError
 
 
 class _FakeElement:
@@ -241,12 +241,12 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
     ), Path("/tmp/final.pdf")]
 
     async def fake_get_book_info(_url):
-        return {"isbn": "isbn-123", "title": "Test Book"}
+        return {"isbn": "isbn-123", "title": "Test Book", "author": "Test Author"}
 
     async def fake_search_aa_all_formats(_isbn, title=""):
         return {"epub": ["epub-md5"], "pdf": ["pdf-md5"], "mobi": []}
 
-    async def fake_download_via_libgen(_isbn, _md5_list):
+    async def fake_download_via_libgen(_isbn, _md5_list, **kwargs):
         result = downloaded_paths.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -281,7 +281,7 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
 
 @pytest.mark.asyncio
 async def test_ebook_download_by_md5_surfaces_manual_fallback(monkeypatch):
-    async def fake_download_via_libgen(_isbn, _md5_list):
+    async def fake_download_via_libgen(_isbn, _md5_list, **kwargs):
         raise ManualDownloadRequiredError(
             "Automatic download failed because Selenium never detected a new downloaded file.",
             fallback_url="https://libgen.test/get.php?md5=md5",
@@ -553,3 +553,114 @@ async def test_download_book_from_annas_archive_allows_no_isbn_on_page(monkeypat
         "deadbeef", isbn=_ISBN13
     )
     assert result.name == "book.epub"
+
+
+def _libgen_page_html(title: str = "", author: str = "", isbn: str = "") -> str:
+    parts = []
+    if title:
+        parts.append(f"Title: {title}")
+    if author:
+        parts.append(f"Author(s): {author}")
+    if isbn:
+        parts.append(f"ISBN: {isbn}")
+    return f"<html><body><table><tr><td>{'<br>'.join(parts)}</td></tr></table></body></html>"
+
+
+def _libgen_link_monkeypatch(monkeypatch, pages: dict[str, str]):
+    async def fake_gather(urls):
+        return list(urls)
+
+    async def fake_fetch(_session, url):
+        md5 = url.rsplit("md5=", 1)[-1]
+        return pages.get(md5, "<html></html>")
+
+    monkeypatch.setattr(download_with_libgen, "gather_page_status", fake_gather)
+    monkeypatch.setattr(download_with_libgen, "_fetch_page", fake_fetch)
+
+
+def test_extract_libgen_identity_extracts_title_author_isbn():
+    identity = download_with_libgen._extract_libgen_identity(
+        _libgen_page_html(title="The Great Gatsby", author="F. Scott Fitzgerald", isbn="9780743273565")
+    )
+    assert identity["title"] == "The Great Gatsby"
+    assert identity["author"] == "F. Scott Fitzgerald"
+    assert "9780743273565" in identity["isbn"]
+
+
+def test_libgen_identity_confirmed_accepts_last_first_author_order():
+    assert download_with_libgen._libgen_identity_confirmed(
+        "The Great Gatsby", "F. Scott Fitzgerald", "The Great Gatsby", "King, Stephen"
+    ) is False
+    assert download_with_libgen._libgen_identity_confirmed(
+        "The Great Gatsby", "Stephen King", "The Great Gatsby", "King, Stephen"
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_get_libgen_link_selects_isbn_confirmed_link(monkeypatch):
+    pages = {
+        "a1" * 16: _libgen_page_html(title="Wrong Book", author="Other Author", isbn="9780000000000"),
+        "b2" * 16: _libgen_page_html(title="The Great Gatsby", author="F. Scott Fitzgerald", isbn="9780743273565"),
+    }
+    _libgen_link_monkeypatch(monkeypatch, pages)
+
+    link = await download_with_libgen.get_libgen_link(
+        "9780743273565", [("a1" * 16), ("b2" * 16)], "https://libgen.test",
+        title="The Great Gatsby", author="F. Scott Fitzgerald",
+    )
+    assert link.endswith("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
+
+
+@pytest.mark.asyncio
+async def test_get_libgen_link_accepts_identity_confirmed_when_isbn_missing(monkeypatch):
+    pages = {
+        "c3" * 16: _libgen_page_html(title="The Great Gatsby", author="F. Scott Fitzgerald", isbn=""),
+    }
+    _libgen_link_monkeypatch(monkeypatch, pages)
+
+    link = await download_with_libgen.get_libgen_link(
+        "9780743273565", ["c3" * 16], "https://libgen.test",
+        title="The Great Gatsby", author="F. Scott Fitzgerald",
+    )
+    assert link.endswith("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3")
+
+
+@pytest.mark.asyncio
+async def test_get_libgen_link_rejects_unconfirmed_when_confirmation_required(monkeypatch):
+    pages = {
+        "d4" * 16: _libgen_page_html(title="Unrelated Book", author="Someone Else", isbn=""),
+    }
+    _libgen_link_monkeypatch(monkeypatch, pages)
+
+    with pytest.raises(BookNotFoundError):
+        await download_with_libgen.get_libgen_link(
+            "9780743273565", ["d4" * 16], "https://libgen.test",
+            title="The Great Gatsby", author="F. Scott Fitzgerald",
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_libgen_link_permissive_fallback_when_confirmation_not_required(monkeypatch):
+    pages = {
+        "e5" * 16: _libgen_page_html(title="", author="", isbn=""),
+    }
+    _libgen_link_monkeypatch(monkeypatch, pages)
+
+    link = await download_with_libgen.get_libgen_link(
+        "e5" * 16, ["e5" * 16], "https://libgen.test", require_confirmation=False
+    )
+    assert link.endswith("e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5")
+
+
+@pytest.mark.asyncio
+async def test_get_libgen_link_matches_isbn10_page_for_isbn13_target(monkeypatch):
+    pages = {
+        "f6" * 16: _libgen_page_html(title="The Great Gatsby", author="F. Scott Fitzgerald", isbn=_ISBN10),
+    }
+    _libgen_link_monkeypatch(monkeypatch, pages)
+
+    link = await download_with_libgen.get_libgen_link(
+        _ISBN13, ["f6" * 16], "https://libgen.test",
+        title="The Great Gatsby", author="F. Scott Fitzgerald",
+    )
+    assert link.endswith("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6")

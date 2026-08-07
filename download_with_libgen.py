@@ -47,8 +47,84 @@ async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str:
         return await response.text()
 
 
+def _extract_libgen_identity(html: str) -> dict[str, str]:
+    """Extract title, author, and ISBN strings from a LibGen get.php page.
+
+    Returns the raw strings (ISBN as a plain string before normalization).
+    Best-effort: any missing field is returned as ``""``, which simply means
+    that link cannot be identity-confirmed.
+    """
+    text = " ".join(BeautifulSoup(html, "html.parser").get_text(" ", strip=True).split())
+
+    author_label = r"Author(?:\(s\))?"
+    next_labels = rf"Author(?:\(s\))?|Title|Publisher|Language|Year|Pages|ISBN|File|Edition|Series"
+
+    def _field(label: str, next_labels: str) -> str:
+        pattern = re.compile(
+            rf"{label}\s*:?\s*(.{{2,400}}?)(?=\s*(?:{next_labels})\s*:|$)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        match = pattern.search(text)
+        return match.group(1).strip() if match else ""
+
+    title = _field("Title", next_labels)
+    author = _field(author_label, next_labels)
+
+    # ISBN values can be hyphenated or contain both ISBN-10 and ISBN-13, so
+    # match against the text with separators stripped instead of parsing one field.
+    compact = re.sub(r"[\s-]", "", text)
+    isbn_values = re.findall(r"(97[89]\d{10}|\d{9}[\dXx])", compact)
+    return {"title": title, "author": author, "isbn": ",".join(isbn_values)}
+
+
+def _libgen_identity_confirmed(
+    requested_title: str,
+    requested_author: str,
+    page_title: str,
+    page_author: str,
+) -> bool:
+    """Confirm a LibGen page matches the requested book by title and author.
+
+    Uses download_flow's normalized token matching (lazy import to avoid a
+    circular dependency at module load). Title must appear as a phrase in the
+    page title; author must have all its meaningful tokens present on the page
+    (order-insensitive so "King, Stephen" matches "Stephen King").
+    """
+    from download_flow import _aa_result_is_relevant, _aa_meaningful_tokens
+
+    if not _aa_result_is_relevant(requested_title, page_title, ""):
+        return False
+    if not requested_author:
+        return True
+    requested_tokens = _aa_meaningful_tokens(requested_author)
+    if not requested_tokens:
+        return True
+    return requested_tokens.issubset(_aa_meaningful_tokens(page_author))
+
+
 @log_call
-async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: str) -> str:
+async def get_libgen_link(
+    isbn: str,
+    book_md5_list: list[str],
+    libgen_mirror: str,
+    *,
+    require_confirmation: bool = True,
+    title: str = "",
+    author: str = "",
+) -> str:
+    """Select a LibGen download link, verifying it matches the requested book.
+
+    When *require_confirmation* is true (metadata flow), only links whose page
+    confirms the book identity are accepted: first by ISBN match, then by
+    title+author match. Unconfirmed links are never downloaded, so a wrong book
+    can't be silently delivered; unconfirmed candidates fall through to the
+    Anna's Archive path instead.
+
+    When *require_confirmation* is false (direct-md5 flow), the md5 itself is
+    the user's chosen identity, so the legacy permissive fallback is kept.
+    """
+    from download_flow import _normalize_isbn
+
     links = [f'{libgen_mirror}/get.php?md5={quote(md5)}' for md5 in book_md5_list]
 
     status = await gather_page_status(links)
@@ -57,25 +133,39 @@ async def get_libgen_link(isbn: str, book_md5_list: list[str], libgen_mirror: st
     async with aiohttp.ClientSession() as session:
         pages = await asyncio.gather(*[_fetch_page(session, link) for link in active_links])
 
+    requested_isbn = _normalize_isbn(isbn)
     isbn_confirmed: list[str] = []
+    identity_confirmed: list[str] = []
     isbn_unconfirmed: list[str] = []
     for link, page in zip(active_links, pages):
-        soup = BeautifulSoup(page, 'html.parser')
-        isbn_text = ""
-        for td in soup.find_all('td'):
-            text = td.get_text()
-            if 'ISBN' in text:
-                isbn_text = text
-                break
-        if isbn in isbn_text:
+        identity = _extract_libgen_identity(page)
+        page_isbns = [_normalize_isbn(value) for value in identity["isbn"].split(",") if _normalize_isbn(value)]
+        isbn_matches = bool(requested_isbn) and any(
+            requested_isbn in page_isbn or page_isbn in requested_isbn for page_isbn in page_isbns
+        )
+        identity_matches = False if isbn_matches else _libgen_identity_confirmed(
+            title, author, identity["title"], identity["author"]
+        )
+        if isbn_matches:
             isbn_confirmed.append(link)
-        elif not isbn_text:
+        elif identity_matches:
+            identity_confirmed.append(link)
+        elif not identity["isbn"]:
             isbn_unconfirmed.append(link)
-        # else: page has ISBN metadata but wrong ISBN — skip
+        logger.info(
+            f"LibGen link decision md5={link.rsplit('md5=', 1)[-1]} "
+            f"page_isbn={'yes' if identity['isbn'] else 'no'} "
+            f"isbn_confirmed={isbn_matches} identity_confirmed={identity_matches} "
+            f"title={identity['title']!r} author={identity['author']!r} "
+            f"outcome={'accepted' if isbn_matches or identity_matches else 'rejected'}"
+        )
 
-    # Prefer ISBN-confirmed links; fall back to pages without ISBN metadata;
-    # last resort: all active links (mirrors that didn't render metadata at all).
-    correct_active_links = isbn_confirmed or isbn_unconfirmed or active_links
+    if require_confirmation:
+        correct_active_links = isbn_confirmed or identity_confirmed
+    else:
+        # Prefer confirmed links; fall back to pages without ISBN metadata;
+        # last resort: all active links (mirrors that didn't render metadata at all).
+        correct_active_links = isbn_confirmed or identity_confirmed or isbn_unconfirmed or active_links
     if not correct_active_links:
         raise BookNotFoundError(f"No libgen download found matching ISBN {isbn}")
     return correct_active_links[0]

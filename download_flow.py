@@ -76,12 +76,25 @@ async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
     return page if data.get("status") == "ok" and isinstance(page, str) else ""
 
 
+def _extract_author_name(value: object) -> str:
+    """Return a display name from a JSON-LD author value of any shape."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        name = value.get("name")
+        return str(name).strip() if name else ""
+    if isinstance(value, list):
+        names = [_extract_author_name(item) for item in value]
+        return ", ".join(name for name in names if name)
+    return ""
+
+
 @log_call
 async def get_book_info(url: str) -> dict[str, str]:
-    """Extract ISBN and title from a Goodreads book page.
+    """Extract ISBN, title, and author from a Goodreads book page.
 
-    Returns ``{"isbn": "...", "title": "..."}``.
-    Title may be empty if extraction fails.
+    Returns ``{"isbn": "...", "title": "...", "author": "..."}``.
+    Title/author may be empty if extraction fails.
     """
     logger.info(f"Metadata decision source=goodreads url={url} retrieval=direct")
     try:
@@ -92,6 +105,7 @@ async def get_book_info(url: str) -> dict[str, str]:
 
     isbn = ""
     title = ""
+    author = ""
 
     for script in soup.find_all('script', type='application/ld+json'):
         try:
@@ -100,6 +114,8 @@ async def get_book_info(url: str) -> dict[str, str]:
                 isbn = data.get('isbn', '')
             if not title:
                 title = data.get('name', '')
+            if not author:
+                author = _extract_author_name(data.get('author'))
         except (json.JSONDecodeError, AttributeError, TypeError):
             continue
 
@@ -116,6 +132,8 @@ async def get_book_info(url: str) -> dict[str, str]:
                         isbn = data.get('isbn', '')
                     if not title:
                         title = data.get('name', '')
+                    if not author:
+                        author = _extract_author_name(data.get('author'))
                 except (json.JSONDecodeError, AttributeError, TypeError):
                     continue
             match = re.search(r"isbn\D{0,200}(\d{10,13})", text, re.IGNORECASE)
@@ -130,8 +148,8 @@ async def get_book_info(url: str) -> dict[str, str]:
         if og_title and og_title.get('content'):
             title = og_title['content']
 
-    logger.info(f"Extracted book info: isbn={isbn}, title={title!r}")
-    return {"isbn": isbn, "title": title}
+    logger.info(f"Extracted book info: isbn={isbn}, title={title!r}, author={author!r}")
+    return {"isbn": isbn, "title": title, "author": author}
 
 
 
@@ -427,11 +445,25 @@ async def search_books(query: str) -> list[dict]:
     return await _search_aa_metadata(query)
 
 
-async def _download_via_libgen(isbn: str, md5_list: list[str]) -> Path:
+async def _download_via_libgen(
+    isbn: str,
+    md5_list: list[str],
+    *,
+    require_confirmation: bool = True,
+    title: str = "",
+    author: str = "",
+) -> Path:
     logger.info(f"Download decision source=libgen identifier={isbn} candidates={len(md5_list)}")
     libgen_mirror = await choose_libgen_mirror()
     logger.info("Download decision source=libgen mirror=selected next=get_link")
-    url = await get_libgen_link(isbn, md5_list, libgen_mirror)
+    url = await get_libgen_link(
+        isbn,
+        md5_list,
+        libgen_mirror,
+        require_confirmation=require_confirmation,
+        title=title,
+        author=author,
+    )
     logger.info("Download decision source=libgen link=selected next=selenium")
     return await asyncio.to_thread(download_book_using_selenium, url)
 
@@ -489,7 +521,7 @@ async def ebook_download_by_md5(md5: str, kindle_mail: str, on_status=None) -> N
 
     logger.info(f"Download decision source=libgen_md5 md5={md5}")
     _emit("downloading")
-    book_path = await _download_via_libgen(md5, [md5])
+    book_path = await _download_via_libgen(md5, [md5], require_confirmation=False)
 
     logger.info("Download decision source=libgen_md5 file=ready next=kindle_delivery")
     _emit("sending")
@@ -519,7 +551,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
     if book_path is None:
         logger.warning(f"Anna direct download exhausted; trying LibGen mirror for md5={md5}")
         try:
-            book_path = await _download_via_libgen(md5, [md5])
+            book_path = await _download_via_libgen(md5, [md5], require_confirmation=False)
         except (ConnectionError, DownloadError, BookNotFoundError) as exc:
             raise DownloadError(f"Anna direct download failed for md5={md5}") from exc
 
@@ -542,10 +574,13 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
         book_info["title"],
         kindle_mail,
         on_status=on_status,
+        author=book_info.get("author", ""),
     )
 
 
-async def ebook_download_from_metadata(isbn: str, title: str, kindle_mail: str, on_status=None) -> None:
+async def ebook_download_from_metadata(
+    isbn: str, title: str, kindle_mail: str, on_status=None, author: str = ""
+) -> None:
     def _emit(status):
         if on_status:
             on_status(status)
@@ -574,7 +609,7 @@ async def ebook_download_from_metadata(isbn: str, title: str, kindle_mail: str, 
     if epub_hashes:
         try:
             logger.info("Download decision branch=libgen_epub")
-            book_path = await _download_via_libgen(isbn, epub_hashes)
+            book_path = await _download_via_libgen(isbn, epub_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (epub): {book_path.name}")
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
             logger.warning(f"LibGen download (epub) failed: {e}")
@@ -586,7 +621,7 @@ async def ebook_download_from_metadata(isbn: str, title: str, kindle_mail: str, 
     if book_path is None and pdf_hashes:
         try:
             logger.info("Download decision branch=libgen_pdf reason=epub_unavailable_or_failed")
-            book_path = await _download_via_libgen(isbn, pdf_hashes)
+            book_path = await _download_via_libgen(isbn, pdf_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (pdf): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -600,7 +635,7 @@ async def ebook_download_from_metadata(isbn: str, title: str, kindle_mail: str, 
     if book_path is None and mobi_hashes:
         try:
             logger.info("Download decision branch=libgen_mobi reason=preferred_formats_unavailable_or_failed")
-            book_path = await _download_via_libgen(isbn, mobi_hashes)
+            book_path = await _download_via_libgen(isbn, mobi_hashes, title=title, author=author)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via LibGen (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
             last_error = None

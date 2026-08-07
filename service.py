@@ -256,6 +256,7 @@ class Md5DownloadRequest(BaseModel):
 class MetadataDownloadRequest(BaseModel):
     isbn: str = Field(pattern=r"^(?:97[89]\d{10}|\d{9}[\dX])$")
     title: str = Field(min_length=1, max_length=500)
+    author: str = Field(default="", max_length=300)
     kindle_mail: EmailStr
 
 
@@ -625,7 +626,7 @@ async def download_from_metadata(
     job_id = _make_job(user, client_ip=client_ip)
     logger.info(
         f"Download routing decision source=google_books_metadata user={user.user_id} "
-        f"isbn={payload.isbn} title={payload.title!r}"
+        f"isbn={payload.isbn} title={payload.title!r} author={payload.author!r}"
     )
 
     def on_status(status):
@@ -639,6 +640,7 @@ async def download_from_metadata(
                 payload.title,
                 payload.kindle_mail,
                 on_status=on_status,
+                author=payload.author,
             ),
         )
     )
