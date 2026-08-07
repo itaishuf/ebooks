@@ -289,14 +289,16 @@ async def _download_via_slow_partners(md5: str, slow_urls: list[str], on_status=
 
 
 @log_call
-async def download_book_from_annas_archive(md5: str, isbn: str = "", on_status=None) -> Path:
+async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = None, on_status=None) -> Path:
     """Download an ebook from Anna's Archive.
 
     Strategy:
     1. Fetch the AA MD5 page once to extract both the IA link (if any) and the
        slow_download URL.
-    2. If *isbn* is provided, verify it appears on the MD5 page before proceeding
-       (skips wrong-book results that slipped through the title search).
+    2. If *isbns* is provided, verify at least one appears on the MD5 page before
+       proceeding (skips wrong-book results that slipped through the title search,
+       while accepting different editions when Google Books returns additional
+       ISBNs from other same-language editions).
     3. Try Internet Archive directly (fast, no bot protection) if an IA source is
        linked from the page.
     4. Fall back to the FlareSolverr slow-download path + download-proxy sidecar
@@ -304,11 +306,13 @@ async def download_book_from_annas_archive(md5: str, isbn: str = "", on_status=N
     """
     html = await _fetch_md5_page(md5)
 
-    if isbn:
+    if isbns:
         page_isbns = _page_isbns(html)
-        if page_isbns and not any(isbn in p or p in isbn for p in page_isbns):
+        if page_isbns and not any(
+            any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
+        ):
             logger.warning(
-                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {isbn}, skipping"
+                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, skipping"
             )
             raise DownloadError(f"ISBN mismatch on AA MD5 page for {md5}")
         logger.info(

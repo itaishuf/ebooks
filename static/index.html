@@ -2015,7 +2015,7 @@
               body: JSON.stringify({
                 ...(isAnnaResult
                   ? { md5: result.md5, source: 'annas_archive' }
-                  : { isbn: result.isbn, title: result.title, author: result.author || '' }),
+                  : { isbn: result.isbn, title: result.title, author: result.author || '', language: result.language || '' }),
                 kindle_mail: this.kindleMail,
               }),
             });

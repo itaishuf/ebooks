@@ -268,6 +268,7 @@ class MetadataDownloadRequest(BaseModel):
     isbn: str = Field(pattern=r"^(?:97[89]\d{10}|\d{9}[\dX])$")
     title: str = Field(min_length=1, max_length=500)
     author: str = Field(default="", max_length=300)
+    language: str = Field(default="", max_length=10)
     kindle_mail: EmailStr
 
 
@@ -717,6 +718,7 @@ async def download_from_metadata(
                 payload.kindle_mail,
                 on_status=on_status,
                 author=payload.author,
+                language=payload.language,
             ),
         )
     )

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -560,7 +561,7 @@ async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch):
 
     with pytest.raises(DownloadError, match="ISBN mismatch"):
         await download_with_annas_archive.download_book_from_annas_archive(
-            "deadbeef", isbn=_ISBN13
+            "deadbeef", isbns={_ISBN13}
         )
 
 
@@ -579,7 +580,7 @@ async def test_download_book_from_annas_archive_allows_matching_isbn13(monkeypat
     monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
 
     result = await download_with_annas_archive.download_book_from_annas_archive(
-        "deadbeef", isbn=_ISBN13
+        "deadbeef", isbns={_ISBN13}
     )
     assert result.name == "book.epub"
 
@@ -643,6 +644,39 @@ def test_google_cover_url_prefers_largest_supported_image():
 )
 def test_google_cover_url_rejects_unsafe_or_malformed_values(image_links):
     assert download_flow._google_cover_url(image_links) == ""
+
+
+def test_google_edition_isbns_from_cache():
+    """Collect all ISBNs from cached volumes matching title and language."""
+    now = time.monotonic()
+    expiry = now + 60
+    result_entry = {"title": "Heart the Lover", "author": "Lily King"}
+    volumes = [
+        {"volumeInfo": {"title": "Heart the Lover", "language": "en",
+         "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9781837265503"}]}},
+        {"volumeInfo": {"title": "Heart the Lover", "language": "en",
+         "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9781955765121"},
+                                  {"type": "ISBN_10", "identifier": "195576512X"}]}},
+        {"volumeInfo": {"title": "Heart the Lover", "language": "fr",
+         "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780000000001"}]}},
+    ]
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_CACHE["test_query_heart"] = (expiry, [result_entry], volumes)
+
+    en_isbns = download_flow._google_edition_isbns("Heart the Lover", language="en")
+    assert en_isbns == {"9781837265503", "9781955765121", "195576512X"}
+
+    fr_isbns = download_flow._google_edition_isbns("Heart the Lover", language="fr")
+    assert fr_isbns == {"9780000000001"}
+
+    no_lang = download_flow._google_edition_isbns("Heart the Lover")
+    assert no_lang == {"9781837265503", "9781955765121", "9780000000001", "195576512X"}
+
+    empty = download_flow._google_edition_isbns("Nonexistent", language="en")
+    assert empty == set()
+
+    download_flow._GOOGLE_CACHE.clear()
+
 
 
 @pytest.mark.asyncio
@@ -1117,7 +1151,7 @@ async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
     statuses = []
     sent_paths = []
 
-    async def fake_download(_md5: str, on_status=None) -> Path:
+    async def fake_download(_md5: str, isbns=None, on_status=None) -> Path:
         return Path("/tmp/hebrew-book.epub")
 
     def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
@@ -1140,11 +1174,11 @@ async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
 async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
     sent_paths = []
 
-    async def fake_aa_download(_md5: str, on_status=None) -> Path:
+    async def fake_aa_download(_md5: str, isbns=None, on_status=None) -> Path:
         raise DownloadError("Anna CDN unavailable")
 
-    async def fake_libgen_download(isbn: str, md5_list: list[str], **kwargs) -> Path:
-        assert isbn == "0123456789abcdef0123456789abcdef"
+    async def fake_libgen_download(isbns: set[str], md5_list: list[str], **kwargs) -> Path:
+        assert "0123456789abcdef0123456789abcdef" in isbns
         assert md5_list == ["0123456789abcdef0123456789abcdef"]
         return Path("/tmp/libgen-book.epub")
 
@@ -1182,7 +1216,7 @@ async def test_download_book_from_annas_archive_allows_isbn10_match(monkeypatch,
     monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
 
     result = await download_with_annas_archive.download_book_from_annas_archive(
-        "deadbeef", isbn=_ISBN13
+        "deadbeef", isbns={_ISBN13}
     )
     assert result.name == "book.epub"
 
@@ -1202,7 +1236,7 @@ async def test_download_book_from_annas_archive_allows_no_isbn_on_page(monkeypat
     monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
 
     result = await download_with_annas_archive.download_book_from_annas_archive(
-        "deadbeef", isbn=_ISBN13
+        "deadbeef", isbns={_ISBN13}
     )
     assert result.name == "book.epub"
 
@@ -1257,7 +1291,7 @@ async def test_get_libgen_link_selects_isbn_confirmed_link(monkeypatch):
     _libgen_link_monkeypatch(monkeypatch, pages)
 
     link = await download_with_libgen.get_libgen_link(
-        "9780743273565", [("a1" * 16), ("b2" * 16)], "https://libgen.test",
+        {"9780743273565"}, [("a1" * 16), ("b2" * 16)], "https://libgen.test",
         title="The Great Gatsby", author="F. Scott Fitzgerald",
     )
     assert link.endswith("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2")
@@ -1271,7 +1305,7 @@ async def test_get_libgen_link_accepts_identity_confirmed_when_isbn_missing(monk
     _libgen_link_monkeypatch(monkeypatch, pages)
 
     link = await download_with_libgen.get_libgen_link(
-        "9780743273565", ["c3" * 16], "https://libgen.test",
+        {"9780743273565"}, ["c3" * 16], "https://libgen.test",
         title="The Great Gatsby", author="F. Scott Fitzgerald",
     )
     assert link.endswith("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3")
@@ -1286,7 +1320,7 @@ async def test_get_libgen_link_rejects_unconfirmed_when_confirmation_required(mo
 
     with pytest.raises(BookNotFoundError):
         await download_with_libgen.get_libgen_link(
-            "9780743273565", ["d4" * 16], "https://libgen.test",
+            {"9780743273565"}, ["d4" * 16], "https://libgen.test",
             title="The Great Gatsby", author="F. Scott Fitzgerald",
         )
 
@@ -1299,7 +1333,7 @@ async def test_get_libgen_link_permissive_fallback_when_confirmation_not_require
     _libgen_link_monkeypatch(monkeypatch, pages)
 
     link = await download_with_libgen.get_libgen_link(
-        "e5" * 16, ["e5" * 16], "https://libgen.test", require_confirmation=False
+        {"e5" * 16}, ["e5" * 16], "https://libgen.test", require_confirmation=False
     )
     assert link.endswith("e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5")
 
@@ -1312,7 +1346,7 @@ async def test_get_libgen_link_matches_isbn10_page_for_isbn13_target(monkeypatch
     _libgen_link_monkeypatch(monkeypatch, pages)
 
     link = await download_with_libgen.get_libgen_link(
-        _ISBN13, ["f6" * 16], "https://libgen.test",
+        {_ISBN13}, ["f6" * 16], "https://libgen.test",
         title="The Great Gatsby", author="F. Scott Fitzgerald",
     )
     assert link.endswith("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6")

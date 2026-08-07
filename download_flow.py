@@ -690,6 +690,50 @@ def _google_cached_volumes(query: str) -> list[dict]:
     return cached[2]
 
 
+def _google_edition_isbns(title: str, author: str = "", *, language: str = "") -> set[str]:
+    """Return all ISBNs from cached Google Books volumes whose title and language match.
+
+    Iterates the reasonably-small cache (max ~64 entries) to find volumes matching
+    the requested book. Only ISBNs from volumes with the same language as the
+    user-selected edition are included, so unrelated foreign-language editions are
+    excluded from the LibGen / Anna's Archive identity checks.
+    """
+    normalized_title = _normalize_query(title)
+    normalized_author = _normalize_query(author) if author else ""
+    isbns: set[str] = set()
+    now = time.monotonic()
+    for _normalized_query_key, (expiry, _results, volumes) in list(_GOOGLE_CACHE.items()):
+        if expiry <= now:
+            continue
+        for result in _results:
+            result_title = _normalize_query(result.get("title", ""))
+            if normalized_title not in result_title:
+                continue
+            if normalized_author and normalized_author not in _normalize_query(result.get("author", "")):
+                continue
+            for volume in volumes:
+                if not isinstance(volume, dict):
+                    continue
+                vol_info = volume.get("volumeInfo", {})
+                if not isinstance(vol_info, dict):
+                    continue
+                vol_lang = str(vol_info.get("language", ""))
+                if language and vol_lang != language:
+                    continue
+                identifiers = vol_info.get("industryIdentifiers", [])
+                for identifier in identifiers:
+                    if not isinstance(identifier, dict):
+                        continue
+                    if identifier.get("type") not in {"ISBN_13", "ISBN_10"}:
+                        continue
+                    raw = identifier.get("identifier", "")
+                    normalized = _normalize_isbn(raw)
+                    if normalized:
+                        isbns.add(normalized)
+            return isbns
+    return isbns
+
+
 def _normalized_metadata_text(value: object) -> str:
     normalized = unicodedata.normalize("NFKD", str(value).casefold())
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
@@ -933,18 +977,19 @@ async def search_books(query: str) -> list[dict]:
 
 
 async def _download_via_libgen(
-    isbn: str,
+    isbns: set[str],
     md5_list: list[str],
     *,
     require_confirmation: bool = True,
     title: str = "",
     author: str = "",
 ) -> Path:
-    logger.info(f"Download decision source=libgen identifier={isbn} candidates={len(md5_list)}")
+    primary_isbn = next(iter(isbns), "")
+    logger.info(f"Download decision source=libgen identifier={primary_isbn} isbns={len(isbns)} candidates={len(md5_list)}")
     libgen_mirror = await choose_libgen_mirror()
     logger.info("Download decision source=libgen mirror=selected next=get_link")
     url = await get_libgen_link(
-        isbn,
+        isbns,
         md5_list,
         libgen_mirror,
         require_confirmation=require_confirmation,
@@ -956,14 +1001,14 @@ async def _download_via_libgen(
 
 
 async def _download_via_annas_archive(
-    md5_list: list[str], isbn: str = "", on_status=None
+    md5_list: list[str], isbns: set[str] | None = None, on_status=None
 ) -> Path:
     _emit_status(on_status, "trying_alternative", source="annas_archive")
     last_error: Exception | None = None
     for md5 in md5_list:
         try:
             logger.info(f"Download decision source=annas_archive md5={md5} action=attempt")
-            return await download_book_from_annas_archive(md5, isbn=isbn, on_status=on_status)
+            return await download_book_from_annas_archive(md5, isbns=isbns, on_status=on_status)
         except (DownloadError, Exception) as e:
             logger.warning(f"Download decision source=annas_archive md5={md5} outcome=failed type={e.__class__.__name__}")
             last_error = e
@@ -1027,7 +1072,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
             if attempt == 0:
                 _emit("downloading")
             _emit("downloading", source="annas_archive", attempt=attempt + 1)
-            book_path = await download_book_from_annas_archive(md5, on_status=_emit)
+            book_path = await download_book_from_annas_archive(md5, isbns=None, on_status=_emit)
             break
         except DownloadError as exc:
             last_error = exc
@@ -1037,7 +1082,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
     if book_path is None:
         logger.warning(f"Anna direct download exhausted; trying LibGen mirror for md5={md5}")
         try:
-            book_path = await _download_via_libgen(md5, [md5], require_confirmation=False)
+            book_path = await _download_via_libgen({md5}, [md5], require_confirmation=False)
         except (ConnectionError, DownloadError, BookNotFoundError) as exc:
             raise DownloadError(f"Anna direct download failed for md5={md5}") from exc
 
@@ -1065,11 +1110,15 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
 
 
 async def ebook_download_from_metadata(
-    isbn: str, title: str, kindle_mail: str, on_status=None, author: str = ""
+    isbn: str, title: str, kindle_mail: str, on_status=None, author: str = "", language: str = ""
 ) -> None:
     def _emit(status, **details):
         _emit_status(on_status, status, **details)
 
+    edition_isbns = _google_edition_isbns(title, author, language=language) if language else set()
+    isbns = {isbn} | edition_isbns
+    if len(isbns) > 1:
+        logger.info(f"Download decision edition_isbns primary={isbn} total={len(isbns)}")
     logger.info(f"Download decision source=metadata isbn={isbn} title={title!r} next=archive_search")
     _emit("searching")
     _emit("searching", source="annas_archive")
@@ -1095,7 +1144,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_epub")
             _emit("downloading", source="libgen", file_format="epub", attempt=1)
-            book_path = await _download_via_libgen(isbn, epub_hashes, title=title, author=author)
+            book_path = await _download_via_libgen(isbns, epub_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (epub): {book_path.name}")
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
             logger.warning(f"LibGen download (epub) failed: {e}")
@@ -1108,7 +1157,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_pdf reason=epub_unavailable_or_failed")
             _emit("downloading", source="libgen", file_format="pdf", attempt=1)
-            book_path = await _download_via_libgen(isbn, pdf_hashes, title=title, author=author)
+            book_path = await _download_via_libgen(isbns, pdf_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (pdf): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -1123,7 +1172,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_mobi reason=preferred_formats_unavailable_or_failed")
             _emit("downloading", source="libgen", file_format="mobi", attempt=1)
-            book_path = await _download_via_libgen(isbn, mobi_hashes, title=title, author=author)
+            book_path = await _download_via_libgen(isbns, mobi_hashes, title=title, author=author)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via LibGen (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
             last_error = None
@@ -1139,7 +1188,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=annas_epub reason=libgen_paths_failed")
             _emit("trying_alternative", source="annas_archive", file_format="epub", attempt=1)
-            book_path = await _download_via_annas_archive(epub_hashes, isbn=isbn, on_status=_emit)
+            book_path = await _download_via_annas_archive(epub_hashes, isbns=isbns, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (epub): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -1152,7 +1201,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=annas_pdf reason=prior_paths_failed")
             _emit("trying_alternative", source="annas_archive", file_format="pdf", attempt=1)
-            book_path = await _download_via_annas_archive(pdf_hashes, isbn=isbn, on_status=_emit)
+            book_path = await _download_via_annas_archive(pdf_hashes, isbns=isbns, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (pdf): {book_path.name}")
             last_error = None
             fallback_error = None
@@ -1165,7 +1214,7 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=annas_mobi reason=prior_paths_failed")
             _emit("trying_alternative", source="annas_archive", file_format="mobi", attempt=1)
-            book_path = await _download_via_annas_archive(mobi_hashes, isbn=isbn, on_status=_emit)
+            book_path = await _download_via_annas_archive(mobi_hashes, isbns=isbns, on_status=_emit)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via Anna's Archive (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
             last_error = None

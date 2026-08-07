@@ -104,7 +104,7 @@ def _libgen_identity_confirmed(
 
 @log_call
 async def get_libgen_link(
-    isbn: str,
+    isbns: set[str],
     book_md5_list: list[str],
     libgen_mirror: str,
     *,
@@ -115,10 +115,11 @@ async def get_libgen_link(
     """Select a LibGen download link, verifying it matches the requested book.
 
     When *require_confirmation* is true (metadata flow), only links whose page
-    confirms the book identity are accepted: first by ISBN match, then by
-    title+author match. Unconfirmed links are never downloaded, so a wrong book
-    can't be silently delivered; unconfirmed candidates fall through to the
-    Anna's Archive path instead.
+    confirms the book identity are accepted: first by ISBN match (against any
+    of the provided *isbns*, including other Google Books edition ISBNs), then
+    by title+author match. Unconfirmed links are never downloaded, so a wrong
+    book can't be silently delivered; unconfirmed candidates fall through to
+    the Anna's Archive path instead.
 
     When *require_confirmation* is false (direct-md5 flow), the md5 itself is
     the user's chosen identity, so the legacy permissive fallback is kept.
@@ -133,15 +134,15 @@ async def get_libgen_link(
     async with aiohttp.ClientSession() as session:
         pages = await asyncio.gather(*[_fetch_page(session, link) for link in active_links])
 
-    requested_isbn = _normalize_isbn(isbn)
+    requested_isbns = {_normalize_isbn(i) for i in isbns if i}
     isbn_confirmed: list[str] = []
     identity_confirmed: list[str] = []
     isbn_unconfirmed: list[str] = []
     for link, page in zip(active_links, pages):
         identity = _extract_libgen_identity(page)
         page_isbns = [_normalize_isbn(value) for value in identity["isbn"].split(",") if _normalize_isbn(value)]
-        isbn_matches = bool(requested_isbn) and any(
-            requested_isbn in page_isbn or page_isbn in requested_isbn for page_isbn in page_isbns
+        isbn_matches = bool(requested_isbns) and any(
+            any(req in p or p in req for req in requested_isbns) for p in page_isbns
         )
         identity_matches = False if isbn_matches else _libgen_identity_confirmed(
             title, author, identity["title"], identity["author"]
@@ -163,11 +164,10 @@ async def get_libgen_link(
     if require_confirmation:
         correct_active_links = isbn_confirmed or identity_confirmed
     else:
-        # Prefer confirmed links; fall back to pages without ISBN metadata;
-        # last resort: all active links (mirrors that didn't render metadata at all).
         correct_active_links = isbn_confirmed or identity_confirmed or isbn_unconfirmed or active_links
     if not correct_active_links:
-        raise BookNotFoundError(f"No libgen download found matching ISBN {isbn}")
+        primary_isbn = next(iter(isbns), "")
+        raise BookNotFoundError(f"No libgen download found matching ISBN {primary_isbn}")
     return correct_active_links[0]
 
 
