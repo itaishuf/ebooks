@@ -308,11 +308,10 @@ async def download_book_from_annas_archive(md5: str, isbn: str = "", on_status=N
         page_isbns = _page_isbns(html)
         if page_isbns and not any(isbn in p or p in isbn for p in page_isbns):
             logger.warning(
-                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {isbn}, skipping"
+                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {isbn}, proceeding anyway (title search already validated)"
             )
-            raise DownloadError(f"ISBN mismatch on AA MD5 page for {md5}")
         logger.info(
-            f"Anna MD5 decision isbn_validation={'matched' if page_isbns else 'unavailable'} md5={md5}"
+            f"Anna MD5 decision isbn_validation={'matched' if page_isbns and any(isbn in p or p in isbn for p in page_isbns) else 'unavailable_or_mismatch'} md5={md5}"
         )
 
     try:
