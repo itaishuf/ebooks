@@ -551,23 +551,17 @@ def test_partner_health_evicts_entries_to_stay_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_download_book_from_annas_archive_proceeds_with_mismatched_isbn(monkeypatch, tmp_path):
-    """MD5 page with a different ISBN proceeds past the check (title search validated)."""
+async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch):
+    """MD5 page with a different ISBN raises DownloadError without fetching further."""
     async def fake_fetch(_md5):
         return _HTML_WITH_WRONG_ISBN
 
-    async def fake_try_ia(_md5, _html):
-        out = tmp_path / "book.epub"
-        out.write_bytes(b"epub-data")
-        return out
-
     monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
-    monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
 
-    result = await download_with_annas_archive.download_book_from_annas_archive(
-        "deadbeef", isbn=_ISBN13
-    )
-    assert result.name == "book.epub"
+    with pytest.raises(DownloadError, match="ISBN mismatch"):
+        await download_with_annas_archive.download_book_from_annas_archive(
+            "deadbeef", isbn=_ISBN13
+        )
 
 
 @pytest.mark.asyncio
