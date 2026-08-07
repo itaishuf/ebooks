@@ -345,7 +345,7 @@ async def search_aa_all_formats(isbn: str, title: str = "") -> dict[str, list[st
     Returns ``{"epub": [md5, ...], "pdf": [...], "mobi": [...]}``.
     """
     query = title if title else isbn
-    params = urlencode({"q": query, "lang": ["en", "he"]}, doseq=True)
+    params = urlencode({"q": query})
     search_url = f"{settings.annas_archive_url}/search?{params}"
 
     logger.info(f"Searching AA for {query!r} (isbn={isbn})")
@@ -446,9 +446,9 @@ def _parse_aa_metadata_results(html: str) -> list[dict]:
 async def _search_aa_metadata(query: str) -> list[dict]:
     if not settings.annas_archive_url:
         raise RuntimeError("Anna's Archive mirror is not configured")
-    params = urlencode({"q": query, "lang": ["en", "he"]}, doseq=True)
+    params = urlencode({"q": query})
     search_url = f"{settings.annas_archive_url}/search?{params}"
-    logger.info(f"Metadata decision source=annas_archive query={query!r} language_filter=['en', 'he']")
+    logger.info(f"Metadata decision source=annas_archive query={query!r}")
     html = await _fetch_page_with_retry(search_url)
     parsed_results = _parse_aa_metadata_results(html)
     relevant_results = [
