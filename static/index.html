@@ -1634,6 +1634,11 @@
                 <template x-if="job.status === 'error'">
                   <div class="error-msg">
                     <p x-text="job.error"></p>
+                    <p x-show="job.errorCode || job.currentSource || job.format">
+                      <span x-show="job.currentSource" x-text="'Last source: ' + job.currentSource"></span>
+                      <span x-show="job.format" x-text="(job.currentSource ? ' · ' : '') + 'Format: ' + job.format"></span>
+                      <span x-show="job.errorCode" x-text="' · Reference: ' + job.errorCode"></span>
+                    </p>
                     <template x-if="job.fallback">
                       <p>
                         <span x-text="job.fallback.message"></span>
@@ -2041,7 +2046,11 @@
             id: jobId,
             status: 'queued',
             error: null,
+            errorCode: null,
             fallback: null,
+            currentSource: '',
+            format: '',
+            attemptSummary: {},
             savedResults,
             title: meta.title || '',
             author: meta.author || '',
@@ -2064,10 +2073,15 @@
               const data = await res.json();
               job.status = data.status;
               job.error = data.error;
+              job.errorCode = data.error_code || null;
               job.fallback = data.fallback || null;
+              job.currentSource = data.current_source || '';
+              job.format = data.format || '';
+              job.attemptSummary = data.attempt_summary || {};
             } catch (e) {
               job.status = 'error';
               job.error = e?.message || 'Authentication failed';
+              job.errorCode = null;
               job.fallback = null;
               break;
             }

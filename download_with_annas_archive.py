@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
@@ -19,6 +20,13 @@ _ISBN_RE = re.compile(r'\b(97[89]\d{10}|\d{9}[\dX])\b')
 AA_COUNTDOWN_WAIT_S = 70
 # Total FlareSolverr budget: DDoS-Guard JS challenge (~10 s) + countdown wait + network.
 FLARESOLVERR_TIMEOUT_MS = 120_000
+_PARTNER_HEALTH: dict[str, dict[str, float | int]] = {}
+# Bounds in-memory partner bookkeeping. Partners change rarely, so this is only
+# hit after many distinct partner paths have been seen.
+_PARTNER_HEALTH_MAX_ENTRIES = 64
+# Upper bound for a single partner response so a broken/abusive partner cannot
+# exhaust process memory by streaming an unbounded body.
+_MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
 
 _BROWSER_HEADERS = {
     "User-Agent": (
@@ -26,6 +34,14 @@ _BROWSER_HEADERS = {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
 }
+
+
+class AnnaPartnerError(DownloadError):
+    """A safe partner failure code, intentionally without URLs or cookie values."""
+
+    def __init__(self, outcome_code: str):
+        super().__init__(outcome_code)
+        self.outcome_code = outcome_code
 
 
 def _page_isbns(html: str) -> list[str]:
@@ -94,19 +110,66 @@ async def _try_internet_archive(md5: str, html: str) -> Path | None:
     raise DownloadError(f"Internet Archive item {item_id} found but all format attempts failed")
 
 
-def _get_slow_download_url(md5: str, html: str) -> str:
-    """Extract the slow_download URL from pre-fetched AA MD5 page HTML."""
+def _get_slow_download_urls(md5: str, html: str) -> list[str]:
+    """Extract unique slow-partner URLs without logging their signed parameters."""
     soup = BeautifulSoup(html, "html.parser")
-    link = soup.find("a", href=re.compile(r"/slow_download/"))
-    if not link:
-        anchors = [a.get("href", "") for a in soup.find_all("a", href=True)]
-        logger.warning(f"No slow_download link on AA MD5 page for {md5}. Anchors: {anchors[:20]}")
-        raise DownloadError(f"No slow_download link found on AA page for md5={md5}")
+    urls = []
+    for link in soup.find_all("a", href=re.compile(r"/slow_download/")):
+        href = link["href"]
+        url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
+        if url not in urls:
+            urls.append(url)
+    if not urls:
+        logger.warning(f"Anna partner decision md5={md5} outcome=no_partner_links")
+        raise AnnaPartnerError("no_partner_links")
+    logger.info(f"Anna partner decision md5={md5} available={len(urls)}")
+    return urls
 
-    href = link["href"]
-    url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
-    logger.info(f"Anna MD5 decision internet_archive=absent next=slow_partner md5={md5}")
-    return url
+
+def _partner_key(slow_url: str) -> str:
+    return urlparse(slow_url).path
+
+
+def _rank_slow_partner_urls(urls: list[str], now: float | None = None) -> list[str]:
+    now = now if now is not None else time.monotonic()
+
+    def health(url: str) -> dict[str, float | int]:
+        return _PARTNER_HEALTH.get(_partner_key(url), {})
+
+    eligible = [url for url in urls if float(health(url).get("cooldown_until", 0.0)) <= now]
+    return sorted(
+        eligible,
+        key=lambda url: (-int(health(url).get("successes", 0)), int(health(url).get("failures", 0))),
+    )[: settings.anna_partner_attempt_limit]
+
+
+def _prune_partner_health() -> None:
+    """Evict stale partner entries so in-memory bookkeeping stays bounded.
+
+    Called from the synchronous bookkeeping helpers; the event loop cannot
+    preempt between calls, so no lock is needed.
+    """
+    if len(_PARTNER_HEALTH) < _PARTNER_HEALTH_MAX_ENTRIES:
+        return
+    now = time.monotonic()
+    for key in list(_PARTNER_HEALTH):
+        if float(_PARTNER_HEALTH[key].get("cooldown_until", 0.0)) <= now:
+            _PARTNER_HEALTH.pop(key, None)
+    while len(_PARTNER_HEALTH) >= _PARTNER_HEALTH_MAX_ENTRIES:
+        _PARTNER_HEALTH.pop(next(iter(_PARTNER_HEALTH)), None)
+
+
+def _record_partner_outcome(slow_url: str, *, success: bool) -> None:
+    _prune_partner_health()
+    state = _PARTNER_HEALTH.setdefault(_partner_key(slow_url), {"successes": 0, "failures": 0, "cooldown_until": 0.0})
+    if success:
+        state["successes"] = int(state["successes"]) + 1
+        state["failures"] = 0
+        state["cooldown_until"] = 0.0
+        return
+    state["failures"] = int(state["failures"]) + 1
+    if int(state["failures"]) >= settings.anna_partner_failure_threshold:
+        state["cooldown_until"] = time.monotonic() + settings.anna_partner_failure_cooldown_seconds
 
 
 async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, str, str]:
@@ -115,26 +178,32 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
     Returns (all_cookies, user_agent, absolute_download_url).
     """
-    logger.info(f"Anna partner decision flaresolverr=attempt md5={md5}")
+    logger.info(f"Anna partner decision md5={md5} stage=flaresolverr action=attempt")
 
-    async with aiohttp.ClientSession() as session:
-        resp = await session.post(
-            f"{settings.flaresolverr_url}/v1",
-            json={
-                "cmd": "request.get",
-                "url": slow_url,
-                "maxTimeout": FLARESOLVERR_TIMEOUT_MS,
-                "waitInSeconds": AA_COUNTDOWN_WAIT_S,
-            },
-        )
-        data = await resp.json()
+    try:
+        timeout = aiohttp.ClientTimeout(total=(FLARESOLVERR_TIMEOUT_MS // 1000) + 15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{settings.flaresolverr_url}/v1",
+                json={
+                    "cmd": "request.get",
+                    "url": slow_url,
+                    "maxTimeout": FLARESOLVERR_TIMEOUT_MS,
+                    "waitInSeconds": AA_COUNTDOWN_WAIT_S,
+                },
+            ) as resp:
+                if resp.status >= 500:
+                    raise AnnaPartnerError("flaresolverr_unavailable")
+                data = await resp.json()
+    except TimeoutError as exc:
+        raise AnnaPartnerError("flaresolverr_timeout") from exc
+    except (aiohttp.ClientError, ValueError) as exc:
+        raise AnnaPartnerError("flaresolverr_transport_failure") from exc
 
     status = data.get("status")
     if status != "ok":
-        logger.warning(f"Anna partner decision flaresolverr=failed status={status!r} md5={md5}")
-        raise DownloadError(
-            f"FlareSolverr returned status={status!r} for md5={md5}: {data.get('message', '')}"
-        )
+        logger.warning(f"Anna partner decision md5={md5} stage=flaresolverr outcome=not_rendered")
+        raise AnnaPartnerError("flaresolverr_not_rendered")
 
     solution = data["solution"]
     all_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
@@ -142,9 +211,6 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
 
     html = solution["response"]
     soup = BeautifulSoup(html, "html.parser")
-
-    anchors = [(a.get("id", ""), a.get("class", ""), a.get("href", "")) for a in soup.find_all("a")]
-    logger.info(f"FlareSolverr rendered anchors for md5={md5}: {anchors}")
 
     btn = soup.find(id="download-button")
     if not btn or not btn.get("href"):
@@ -159,23 +225,71 @@ async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, s
         )
 
     if not btn or not btn.get("href"):
-        raise DownloadError(
-            f"No download link found in FlareSolverr-rendered page for md5={md5}. "
-            f"Anchors found: {anchors[:10]}. "
-            "The AA countdown timer may not have elapsed within the wait window. "
-            f"Consider increasing AA_COUNTDOWN_WAIT_S (currently {AA_COUNTDOWN_WAIT_S}s)."
-        )
+        raise AnnaPartnerError("no_rendered_link")
 
     href = btn["href"]
     download_url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
-    logger.info(f"Anna partner decision flaresolverr=success md5={md5} next=proxy")
-    # Return all cookies — DDoS-Guard uses __ddg* names, not cf_clearance.
-    logger.info(f"FlareSolverr cookies for md5={md5}: {list(all_cookies.keys())}")
+    logger.info(f"Anna partner decision md5={md5} stage=flaresolverr outcome=success next=proxy")
     return all_cookies, user_agent, download_url
 
 
+async def _download_via_slow_partners(md5: str, slow_urls: list[str], on_status=None) -> Path:
+    from download_flow import _emit_status
+
+    candidates = _rank_slow_partner_urls(slow_urls)
+    if not candidates:
+        logger.warning(f"Anna partner decision md5={md5} outcome=all_partners_in_cooldown")
+        raise AnnaPartnerError("all_partners_in_cooldown")
+
+    output_dir = Path(settings.download_dir) / f"aa-{md5[:8]}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    last_error: AnnaPartnerError | None = None
+    for index, slow_url in enumerate(candidates, start=1):
+        try:
+            _emit_status(on_status, "downloading", source="annas_archive", attempt=index)
+            logger.info(f"Anna partner decision md5={md5} partner_attempt={index}/{len(candidates)}")
+            all_cookies, user_agent, download_url = await _solve_and_get_download_link(md5, slow_url)
+            proxy_url = f"{settings.download_proxy_url}/download?" + urlencode(
+                {"url": download_url, "referer": f"{settings.annas_archive_url}/"}
+            )
+            cookie_str = "; ".join(f"{key}={value}" for key, value in all_cookies.items())
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    proxy_url,
+                    headers={"User-Agent": user_agent, "X-Cookies": cookie_str},
+                    timeout=aiohttp.ClientTimeout(total=360),
+                ) as resp:
+                    if resp.status != 200:
+                        raise AnnaPartnerError("proxy_transport_failure")
+                    content_length = resp.headers.get("Content-Length")
+                    if content_length and content_length.isdigit() and int(content_length) > _MAX_DOWNLOAD_BYTES:
+                        raise AnnaPartnerError("file_too_large")
+                    content = await resp.read()
+                    if not content or len(content) > _MAX_DOWNLOAD_BYTES:
+                        raise AnnaPartnerError("file_validation_failed")
+                    filename = Path(
+                        _extract_filename(resp.headers.get("Content-Disposition", ""), download_url, md5)
+                    ).name
+                    if not filename:
+                        raise AnnaPartnerError("file_validation_failed")
+                    file_path = output_dir / filename
+                    file_path.write_bytes(content)
+            _record_partner_outcome(slow_url, success=True)
+            logger.info(f"Anna partner decision md5={md5} partner_attempt={index} outcome=file_valid")
+            return file_path
+        except AnnaPartnerError as exc:
+            last_error = exc
+            _record_partner_outcome(slow_url, success=False)
+            logger.warning(f"Anna partner decision md5={md5} partner_attempt={index} outcome={exc.outcome_code}")
+        except (aiohttp.ClientError, TimeoutError, OSError):
+            last_error = AnnaPartnerError("proxy_transport_failure")
+            _record_partner_outcome(slow_url, success=False)
+            logger.warning(f"Anna partner decision md5={md5} partner_attempt={index} outcome=proxy_transport_failure")
+    raise last_error or AnnaPartnerError("all_partner_attempts_failed")
+
+
 @log_call
-async def download_book_from_annas_archive(md5: str, isbn: str = "") -> Path:
+async def download_book_from_annas_archive(md5: str, isbn: str = "", on_status=None) -> Path:
     """Download an ebook from Anna's Archive.
 
     Strategy:
@@ -201,44 +315,17 @@ async def download_book_from_annas_archive(md5: str, isbn: str = "") -> Path:
             f"Anna MD5 decision isbn_validation={'matched' if page_isbns else 'unavailable'} md5={md5}"
         )
 
-    ia_path = await _try_internet_archive(md5, html)
+    try:
+        ia_path = await _try_internet_archive(md5, html)
+    except DownloadError:
+        ia_path = None
+        logger.warning(f"Anna MD5 decision source=internet_archive outcome=failed md5={md5} next=slow_partner")
     if ia_path:
         logger.info(f"Anna MD5 decision source=internet_archive outcome=success md5={md5}")
         return ia_path
 
     logger.info(f"Anna MD5 decision source=slow_partner reason=internet_archive_unavailable md5={md5}")
-    slow_url = _get_slow_download_url(md5, html)
-    all_cookies, user_agent, download_url = await _solve_and_get_download_link(md5, slow_url)
-
-    output_dir = Path(settings.download_dir) / f"aa-{md5[:8]}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    _parsed = urlparse(download_url)
-    logger.info(f"Requesting AA file via proxy: host={_parsed.netloc} path={_parsed.path[:60]}")
-
-    cookie_str = "; ".join(f"{k}={v}" for k, v in all_cookies.items())
-    proxy_url = (
-        f"{settings.download_proxy_url}/download?"
-        + urlencode({"url": download_url, "referer": f"{settings.annas_archive_url}/"})
-    )
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            proxy_url,
-            headers={"User-Agent": user_agent, "X-Cookies": cookie_str},
-            timeout=aiohttp.ClientTimeout(total=360),
-        ) as resp:
-            logger.info(f"Proxy response: HTTP {resp.status} for host={_parsed.netloc}")
-            if resp.status != 200:
-                body = await resp.text()
-                raise DownloadError(
-                    f"Download proxy returned HTTP {resp.status} for host={_parsed.netloc}: {body[:200]}"
-                )
-            content_disp = resp.headers.get("Content-Disposition", "")
-            filename = _extract_filename(content_disp, download_url, md5)
-            file_path = output_dir / filename
-            file_path.write_bytes(await resp.read())
-
+    file_path = await _download_via_slow_partners(md5, _get_slow_download_urls(md5, html), on_status=on_status)
     size_kb = round(file_path.stat().st_size / 1000, 1)
     logger.info(f"Anna MD5 decision source=proxy outcome=success size_kb={size_kb}")
     return file_path

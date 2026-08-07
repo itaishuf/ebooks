@@ -115,6 +115,10 @@ _rate_limiter = SlidingWindowRateLimiter()
 _download_semaphore: asyncio.Semaphore | None = None
 
 
+class JobStageTimeoutError(DownloadError):
+    """Raised when a pipeline stage stops advancing within its configured budget."""
+
+
 def _content_security_policy() -> str:
     return (
         "default-src 'none'; "
@@ -124,6 +128,11 @@ def _content_security_policy() -> str:
         "connect-src 'self'; "
         "font-src 'self' https://fonts.gstatic.com"
     )
+
+
+def _log_access(request: Request, status_code: int) -> None:
+    client_ip = extract_client_ip(request, settings.trusted_proxy_ips)
+    logger.info(f"HTTP access method={request.method} path={request.url.path} status={status_code} client_ip={client_ip}")
 
 
 @asynccontextmanager
@@ -182,12 +191,14 @@ async def security_headers(request: Request, call_next):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["Content-Security-Policy"] = _content_security_policy()
+        _log_access(request, response.status_code)
         return response
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = _content_security_policy()
+    _log_access(request, response.status_code)
     return response
 
 
@@ -271,13 +282,22 @@ def require_authenticated_user(user: AuthenticatedUser = current_user_dependency
 authenticated_user_dependency = Depends(require_authenticated_user)
 
 
-def _make_job(owner: AuthenticatedUser | None = None, client_ip: str | None = None) -> str:
+def _make_job(
+    owner: AuthenticatedUser | None = None,
+    client_ip: str | None = None,
+    source: str = "unknown",
+) -> str:
     now = datetime.now(UTC)
     job_id = str(uuid4())
     jobs[job_id] = {
         "status": "queued",
         "error": None,
+        "error_code": None,
         "fallback": None,
+        "current_source": source,
+        "format": None,
+        "attempt_summary": {},
+        "stage_started_at_epoch": now.timestamp(),
         "created_at": now.isoformat(),
         "created_at_epoch": now.timestamp(),
         "finished_at_epoch": None,
@@ -288,31 +308,59 @@ def _make_job(owner: AuthenticatedUser | None = None, client_ip: str | None = No
     return job_id
 
 
-def _set_job_status(job_id: str, status: str) -> None:
+def _set_job_status(
+    job_id: str,
+    status: str,
+    *,
+    source: str | None = None,
+    file_format: str | None = None,
+    attempt: int | None = None,
+) -> None:
     job = jobs.get(job_id)
     if job is None:
         return
     previous_status = job["status"]
     job["status"] = status
-    logger.info(f"Job decision transition={previous_status}->{status}")
+    job["stage_started_at_epoch"] = time.time()
+    if source:
+        job["current_source"] = source
+    if file_format:
+        job["format"] = file_format
+    if attempt is not None:
+        summary = job["attempt_summary"]
+        summary[status] = max(int(summary.get(status, 0)), attempt)
+    logger.info(
+        f"Job decision transition={previous_status}->{status} source={job['current_source']} "
+        f"format={job['format'] or 'unknown'} attempts={job['attempt_summary']}"
+    )
 
 
 def _job_error_update(error: Exception) -> dict:
     error_message = "Request failed"
+    error_code = "request_failed"
     if isinstance(error, InvalidURLError):
         error_message = "Invalid Goodreads URL"
+        error_code = "invalid_goodreads_url"
     elif isinstance(error, BookNotFoundError):
         error_message = "No matching book was found."
+        error_code = "book_not_found"
     elif isinstance(error, ManualDownloadRequiredError):
         error_message = "Automatic download failed after trying the available sources."
+        error_code = "manual_download_available"
     elif isinstance(error, EmailDeliveryError):
         error_message = "The ebook was downloaded, but delivery to Kindle failed."
+        error_code = "kindle_delivery_failed"
+    elif isinstance(error, JobStageTimeoutError):
+        error_message = "A download stage took too long. Please try another version."
+        error_code = "stage_timeout"
     elif isinstance(error, DownloadError):
         error_message = "The ebook download failed."
+        error_code = "download_failed"
 
     update = {
         "status": "error",
         "error": sanitize_error_detail(error_message, "Request failed"),
+        "error_code": error_code,
         "fallback": None,
         "finished_at_epoch": time.time(),
     }
@@ -335,7 +383,11 @@ def _public_job_payload(job: dict) -> dict:
     return {
         "status": job["status"],
         "error": job["error"],
+        "error_code": job["error_code"],
         "fallback": job["fallback"],
+        "current_source": job["current_source"],
+        "format": job["format"],
+        "attempt_summary": job["attempt_summary"],
         "created_at": job["created_at"],
     }
 
@@ -386,7 +438,29 @@ async def _run_download_job(job_id: str, job_coro_factory) -> None:
 async def _run_job(job_id: str, coro) -> None:
     current_job_id.set(job_id)
     try:
-        await coro
+        task = asyncio.ensure_future(coro)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=1)
+                if task in done:
+                    break
+                job = jobs.get(job_id)
+                if (
+                    job
+                    and time.time() - job["stage_started_at_epoch"] > settings.job_stage_timeout_seconds
+                ):
+                    task.cancel()
+                    try:
+                        # Bounded wait: a pipeline coroutine that swallows the
+                        # cancellation must not hang the watchdog forever.
+                        await asyncio.wait_for(task, timeout=5)
+                    except (asyncio.CancelledError, TimeoutError):
+                        pass
+                    raise JobStageTimeoutError("Pipeline stage exceeded its configured timeout")
+        finally:
+            if not task.done():
+                task.cancel()
+        await task
         jobs[job_id]["finished_at_epoch"] = time.time()
         logger.info("Job decision terminal=done")
     except (InvalidURLError, BookNotFoundError) as e:
@@ -402,6 +476,7 @@ async def _run_job(job_id: str, coro) -> None:
         jobs[job_id].update(
             status="error",
             error="Failed to connect to an external service.",
+            error_code="external_service_unavailable",
             fallback=None,
             finished_at_epoch=time.time(),
         )
@@ -411,6 +486,7 @@ async def _run_job(job_id: str, coro) -> None:
         jobs[job_id].update(
             status="error",
             error="Unexpected error processing request.",
+            error_code="unexpected_failure",
             fallback=None,
             finished_at_epoch=time.time(),
         )
@@ -570,14 +646,14 @@ async def download_from_goodreads(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
-    job_id = _make_job(user, client_ip=client_ip)
+    job_id = _make_job(user, client_ip=client_ip, source="goodreads")
     logger.info(
         f"Download routing decision source=goodreads_url user={user.user_id} "
         f"url={payload.goodreads_url}"
     )
 
-    def on_status(s):
-        _set_job_status(job_id, s)
+    def on_status(s, **details):
+        _set_job_status(job_id, s, **details)
 
     asyncio.create_task(
         _run_download_job(
@@ -623,14 +699,14 @@ async def download_from_metadata(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
-    job_id = _make_job(user, client_ip=client_ip)
+    job_id = _make_job(user, client_ip=client_ip, source="google_books_metadata")
     logger.info(
         f"Download routing decision source=google_books_metadata user={user.user_id} "
         f"isbn={payload.isbn} title={payload.title!r} author={payload.author!r}"
     )
 
-    def on_status(status):
-        _set_job_status(job_id, status)
+    def on_status(status, **details):
+        _set_job_status(job_id, status, **details)
 
     asyncio.create_task(
         _run_download_job(
@@ -682,11 +758,11 @@ async def download_from_md5(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
-    job_id = _make_job(user, client_ip=client_ip)
+    job_id = _make_job(user, client_ip=client_ip, source=payload.source)
     logger.info(f"Created MD5 download job source={payload.source} for {user.user_id}")
 
-    def on_status(s):
-        _set_job_status(job_id, s)
+    def on_status(s, **details):
+        _set_job_status(job_id, s, **details)
 
     asyncio.create_task(
         _run_download_job(
@@ -731,4 +807,4 @@ async def get_job(job_id: UUID, request: Request, user: AuthenticatedUser = auth
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)

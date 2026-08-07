@@ -1,10 +1,12 @@
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
 import smtplib
 import time
+import unicodedata
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -31,6 +33,142 @@ from utils import log_call
 logger = logging.getLogger(__name__)
 _GOOGLE_BOOKS_VOLUMES_URL = "https://www.googleapis.com/books/v1/volumes"
 _ISBN_RE = re.compile(r"^(?:97[89]\d{10}|\d{9}[\dX])$")
+_GOOGLE_COVER_SIZES = ("extraLarge", "large", "medium", "small", "thumbnail", "smallThumbnail")
+_AA_ENGLISH_STOP_WORDS = frozenset(
+    {"a", "an", "and", "author", "book", "by", "for", "from", "in", "of", "on", "the", "to", "volume", "with"}
+)
+_AA_HEBREW_STOP_WORDS = frozenset({"את", "ב", "ה", "ו", "כ", "ל", "מ", "מן", "עם", "על", "של"})
+_GOOGLE_CACHE: dict[str, tuple[float, list[dict], list[dict]]] = {}
+_GOOGLE_COVER_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
+# Bounds the primary Google cache to a fixed number of distinct queries; stale
+# entries for less-recently-seen queries are dropped first.
+_GOOGLE_CACHE_MAX_ENTRIES = 64
+_GOOGLE_BREAKER = {"consecutive_failures": 0, "open_until": 0.0}
+
+
+class GoogleBooksProviderError(RuntimeError):
+    """A provider-safe failure that intentionally excludes request URLs and keys."""
+
+    def __init__(self, outcome_code: str):
+        super().__init__(outcome_code)
+        self.outcome_code = outcome_code
+
+
+def _normalize_query(query: str) -> str:
+    return " ".join(query.casefold().split())
+
+
+def _aa_meaningful_token_sequence(value: object) -> list[str]:
+    """Return normalized title/author words suitable for Anna result matching."""
+    normalized = unicodedata.normalize("NFKD", str(value).casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    tokens: list[str] = []
+    current: list[str] = []
+    for char in normalized:
+        if char.isalpha():
+            current.append(char)
+            continue
+        if current:
+            token = "".join(current)
+            current.clear()
+            if _aa_token_is_meaningful(token):
+                tokens.append(token)
+    if current:
+        token = "".join(current)
+        if _aa_token_is_meaningful(token):
+            tokens.append(token)
+    return tokens
+
+
+def _aa_meaningful_tokens(value: object) -> set[str]:
+    return set(_aa_meaningful_token_sequence(value))
+
+
+def _aa_token_is_meaningful(token: str) -> bool:
+    if token in _AA_ENGLISH_STOP_WORDS or token in _AA_HEBREW_STOP_WORDS:
+        return False
+    is_hebrew = any("\u0590" <= char <= "\u05ff" for char in token)
+    return len(token) >= (2 if is_hebrew else 3)
+
+
+def _aa_title_phrase_matches(query: str, candidate: str) -> bool:
+    """True when the full meaningful-token phrase of *query* appears in *candidate*."""
+    query_tokens = _aa_meaningful_token_sequence(query)
+    if not query_tokens:
+        return False
+    candidate_tokens = _aa_meaningful_token_sequence(candidate)
+    phrase_length = len(query_tokens)
+    return any(
+        candidate_tokens[index:index + phrase_length] == query_tokens
+        for index in range(len(candidate_tokens) - phrase_length + 1)
+    )
+
+
+def _aa_result_is_relevant(query: str, title: str, author: str) -> bool:
+    """True when the query shares any meaningful token with the title or author.
+
+    Searches often combine a title and author (e.g. "Dune Frank Herbert"), so a
+    full contiguous-phrase match would reject valid results. Matching any token
+    keeps the filter broad for search ranking while still dropping unrelated
+    volumes.
+    """
+    query_tokens = set(_aa_meaningful_token_sequence(query))
+    if not query_tokens:
+        return False
+    return bool(
+        query_tokens & _aa_meaningful_tokens(title)
+        or query_tokens & _aa_meaningful_tokens(author)
+    )
+
+
+def _google_circuit_is_open(now: float | None = None) -> bool:
+    return (now if now is not None else time.monotonic()) < _GOOGLE_BREAKER["open_until"]
+
+
+def _record_google_provider_success() -> None:
+    _GOOGLE_BREAKER["consecutive_failures"] = 0
+    _GOOGLE_BREAKER["open_until"] = 0.0
+
+
+def _record_google_provider_failure(outcome_code: str) -> None:
+    if outcome_code not in {"transient_server_error", "timeout", "rate_limited"}:
+        return
+    _GOOGLE_BREAKER["consecutive_failures"] += 1
+    if _GOOGLE_BREAKER["consecutive_failures"] >= settings.google_books_circuit_failure_threshold:
+        _GOOGLE_BREAKER["open_until"] = time.monotonic() + settings.google_books_circuit_cooldown_seconds
+        logger.warning(
+            f"Metadata provider=google_books outcome=circuit_open reason={outcome_code} "
+            f"cooldown_seconds={settings.google_books_circuit_cooldown_seconds}"
+        )
+
+
+def _google_result_is_relevant(query: str, title: str, author: str) -> bool:
+    normalized_query = _normalize_query(query)
+    candidate = _normalize_query(f"{title} {author}")
+    normalized_title = _normalize_query(title)
+    if normalized_query and normalized_query in candidate:
+        return True
+
+    query_tokens = {token for token in re.findall(r"\w+", normalized_query) if len(token) > 1}
+    if not query_tokens:
+        return False
+    title_tokens = set(re.findall(r"\w+", normalized_title))
+    candidate_tokens = set(re.findall(r"\w+", candidate))
+    title_matches = len(query_tokens & title_tokens)
+    candidate_matches = len(query_tokens & candidate_tokens)
+    return title_matches >= 1 and (title_matches * 2 + candidate_matches) >= 2
+
+
+def _emit_status(on_status, status: str, **details) -> None:
+    if on_status is None:
+        return
+    try:
+        on_status(status, **details)
+    except TypeError:
+        # Older callbacks only receive coarse stage updates. They must not see
+        # duplicate stage events that differ only by source/format telemetry.
+        if not details:
+            on_status(status)
 
 
 async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
@@ -260,16 +398,8 @@ def _parse_aa_metadata_results(html: str) -> list[dict]:
     results = []
     seen_md5s = set()
 
-    for outer in soup.find_all("div", class_="js-aarecord-list-outer"):
-        record = next(
-            (
-                item
-                for item in outer.find_all("div", class_="flex", recursive=False)
-                if item.find("a", href=re.compile(r"/md5/[0-9a-f]{32}"))
-            ),
-            None,
-        )
-        if record is None:
+    for record in soup.select("div.js-aarecord-list-outer div.flex"):
+        if not record.find("a", href=re.compile(r"/md5/[0-9a-f]{32}")):
             continue
         md5_link = record.find("a", href=re.compile(r"/md5/([0-9a-f]{32})"))
         md5_match = re.search(r"/md5/([0-9a-f]{32})", md5_link["href"]) if md5_link else None
@@ -293,13 +423,15 @@ def _parse_aa_metadata_results(html: str) -> list[dict]:
             logger.info(f"Anna metadata decision md5={md5} skipped=unsupported_format")
             continue
         language_match = re.search(r"\[([a-z]{2,3})\]", details_text, re.IGNORECASE)
+        cover_image = record.find("img", src=True)
+        cover_url = _public_cover_url(cover_image.get("src") if cover_image else "")
         seen_md5s.add(md5)
         results.append(
             {
                 "title": title,
                 "author": author,
                 "isbn": "",
-                "cover_url": "",
+                "cover_url": cover_url,
                 "md5": md5,
                 "format": format_match.group(1).lower(),
                 "language": language_match.group(1).lower() if language_match else "",
@@ -318,13 +450,25 @@ async def _search_aa_metadata(query: str) -> list[dict]:
     search_url = f"{settings.annas_archive_url}/search?{params}"
     logger.info(f"Metadata decision source=annas_archive query={query!r} language_filter=['en', 'he']")
     html = await _fetch_page_with_retry(search_url)
-    return _parse_aa_metadata_results(html)[:20]
+    parsed_results = _parse_aa_metadata_results(html)
+    relevant_results = [
+        result
+        for result in parsed_results
+        if _aa_result_is_relevant(query, result["title"], result["author"])
+    ]
+    logger.info(
+        f"Anna metadata relevance parsed={len(parsed_results)} "
+        f"rejected={len(parsed_results) - len(relevant_results)} "
+        f"retained={len(relevant_results)} returned={min(len(relevant_results), 20)}"
+    )
+    return relevant_results[:20]
 
 
 @log_call
 async def _fetch_google_books_search(query: str) -> list[dict]:
     if not settings.google_books_api_key:
-        raise RuntimeError("Google Books API key is not configured")
+        logger.warning("Metadata provider=google_books outcome=invalid_configuration")
+        raise GoogleBooksProviderError("invalid_configuration")
     params = {
         "q": query,
         "maxResults": "20",
@@ -341,25 +485,46 @@ async def _fetch_google_books_search(query: str) -> list[dict]:
             async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
                 _GOOGLE_BOOKS_VOLUMES_URL, params=params
             ) as response:
-                logger.info(f"Google Books API response status={response.status}")
+                logger.info(f"Metadata provider=google_books outcome=http_response status={response.status}")
                 if response.status >= 500:
-                    raise RuntimeError(f"Google Books API returned HTTP {response.status}")
-                response.raise_for_status()
-                payload = await response.json()
+                    raise GoogleBooksProviderError("transient_server_error")
+                if response.status == 429:
+                    raise GoogleBooksProviderError("rate_limited")
+                if response.status in {401, 403}:
+                    raise GoogleBooksProviderError("quota_or_authorization")
+                if response.status >= 400:
+                    raise GoogleBooksProviderError("invalid_request")
+                try:
+                    payload = await response.json()
+                except (aiohttp.ContentTypeError, ValueError) as exc:
+                    raise GoogleBooksProviderError("malformed_response") from exc
+            if not isinstance(payload, dict):
+                logger.warning("Metadata provider=google_books outcome=malformed_response reason=payload_not_object")
+                raise GoogleBooksProviderError("malformed_response")
             volumes = payload.get("items", [])
             if not isinstance(volumes, list):
-                logger.warning("Google Books API response decision=invalid_items_payload")
-                return []
-            logger.info(f"Google Books API response volumes={len(volumes)}")
+                logger.warning("Metadata provider=google_books outcome=malformed_response reason=items_not_list")
+                raise GoogleBooksProviderError("malformed_response")
+            logger.info(f"Metadata provider=google_books outcome=success volumes={len(volumes)}")
             return volumes
-        except (aiohttp.ClientError, RuntimeError, TimeoutError, ValueError) as exc:
-            logger.warning(
-                f"Google Books API request failed attempt={attempt + 1}/3 error={exc.__class__.__name__}"
-            )
-            if attempt == 2:
-                raise RuntimeError("Google Books metadata service is unavailable") from None
+        except GoogleBooksProviderError as exc:
+            logger.warning(f"Metadata provider=google_books outcome={exc.outcome_code} attempt={attempt + 1}/3")
+            if exc.outcome_code not in {"transient_server_error", "rate_limited"} or attempt == 2:
+                raise
             await asyncio.sleep(2 ** (attempt + 1))
-    raise RuntimeError("Google Books metadata service is unavailable")
+        except TimeoutError:
+            outcome_code = "timeout"
+            logger.warning(f"Metadata provider=google_books outcome={outcome_code} attempt={attempt + 1}/3")
+            if attempt == 2:
+                raise GoogleBooksProviderError(outcome_code) from None
+            await asyncio.sleep(2 ** (attempt + 1))
+        except aiohttp.ClientError:
+            outcome_code = "transport_error"
+            logger.warning(f"Metadata provider=google_books outcome={outcome_code} attempt={attempt + 1}/3")
+            if attempt == 2:
+                raise GoogleBooksProviderError(outcome_code) from None
+            await asyncio.sleep(2 ** (attempt + 1))
+    raise GoogleBooksProviderError("unavailable")
 
 
 def _normalize_isbn(value: object) -> str:
@@ -367,14 +532,50 @@ def _normalize_isbn(value: object) -> str:
     return isbn if _ISBN_RE.fullmatch(isbn) else ""
 
 
-def _parse_google_books_results(volumes: list[dict]) -> list[dict]:
+def _public_cover_url(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    parsed = urlsplit(value.strip())
+    hostname = parsed.hostname
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or hostname.lower() == "localhost"
+        or hostname.lower().endswith(".local")
+    ):
+        return ""
+    try:
+        if not ipaddress.ip_address(hostname).is_global:
+            return ""
+    except ValueError:
+        pass
+    return parsed._replace(scheme="https", fragment="").geturl()
+
+
+def _google_cover_url(image_links: object) -> str:
+    if not isinstance(image_links, dict):
+        return ""
+    for size in _GOOGLE_COVER_SIZES:
+        cover_url = _public_cover_url(image_links.get(size))
+        if cover_url:
+            return cover_url
+    return ""
+
+
+def _parse_google_books_results(volumes: list[dict], query: str = "") -> list[dict]:
     results = []
     seen_isbns = set()
     skipped_missing_title = 0
     skipped_missing_isbn = 0
     skipped_duplicate_isbn = 0
+    skipped_irrelevant = 0
     language_codes = set()
     for volume in volumes:
+        if not isinstance(volume, dict):
+            skipped_missing_title += 1
+            continue
         volume_info = volume.get("volumeInfo", {})
         if not isinstance(volume_info, dict):
             skipped_missing_title += 1
@@ -407,9 +608,10 @@ def _parse_google_books_results(volumes: list[dict]) -> list[dict]:
         seen_isbns.add(isbn)
         authors = volume_info.get("authors", [])
         author = ", ".join(str(name) for name in authors if name) if isinstance(authors, list) else ""
-        image_links = volume_info.get("imageLinks", {})
-        thumbnail = image_links.get("thumbnail", "") if isinstance(image_links, dict) else ""
-        cover_url = re.sub(r"^http://", "https://", str(thumbnail))
+        if query and not _google_result_is_relevant(query, title, author):
+            skipped_irrelevant += 1
+            continue
+        cover_url = _google_cover_url(volume_info.get("imageLinks"))
         results.append(
             {
                 "title": title,
@@ -425,24 +627,309 @@ def _parse_google_books_results(volumes: list[dict]) -> list[dict]:
     logger.info(
         f"Google Books ISBN decisions volumes={len(volumes)} selected={len(results)} "
         f"skipped_missing_title={skipped_missing_title} skipped_missing_isbn={skipped_missing_isbn} "
-        f"skipped_duplicate_isbn={skipped_duplicate_isbn} language_codes={sorted(language_codes)}"
+        f"skipped_duplicate_isbn={skipped_duplicate_isbn} skipped_irrelevant={skipped_irrelevant} "
+        f"language_codes={sorted(language_codes)}"
     )
     return results
+
+
+async def _google_metadata_results(query: str) -> list[dict]:
+    normalized_query = _normalize_query(query)
+    now = time.monotonic()
+    cached = _GOOGLE_CACHE.get(normalized_query)
+    if cached and cached[0] > now:
+        logger.info("Metadata provider=google_books outcome=cache_hit")
+        return cached[1]
+    if cached:
+        _GOOGLE_CACHE.pop(normalized_query, None)
+
+    if _google_circuit_is_open(now):
+        logger.warning("Metadata provider=google_books outcome=circuit_open action=skip")
+        raise GoogleBooksProviderError("circuit_open")
+
+    try:
+        volumes = await _fetch_google_books_search(query)
+        results = _parse_google_books_results(volumes, query)
+    except GoogleBooksProviderError as exc:
+        _record_google_provider_failure(exc.outcome_code)
+        raise
+    except RuntimeError:
+        # Kept for compatibility with callers and tests that replace the provider.
+        _record_google_provider_failure("transport_error")
+        raise GoogleBooksProviderError("transport_error") from None
+
+    _record_google_provider_success()
+    if volumes:
+        _prune_google_cache(now)
+        _GOOGLE_CACHE[normalized_query] = (
+            now + settings.google_books_cache_ttl_seconds,
+            results,
+            volumes,
+        )
+        logger.info(f"Metadata provider=google_books outcome=cache_store results={len(results)}")
+    return results
+
+
+def _prune_google_cache(now: float | None = None) -> None:
+    """Evict expired entries first, then the oldest, to keep the cache bounded."""
+    now = now if now is not None else time.monotonic()
+    for key in list(_GOOGLE_CACHE):
+        if _GOOGLE_CACHE[key][0] <= now:
+            _GOOGLE_CACHE.pop(key, None)
+    while len(_GOOGLE_CACHE) >= _GOOGLE_CACHE_MAX_ENTRIES:
+        _GOOGLE_CACHE.pop(next(iter(_GOOGLE_CACHE)), None)
+
+
+def _google_cached_volumes(query: str) -> list[dict]:
+    cached = _GOOGLE_CACHE.get(_normalize_query(query))
+    if not cached:
+        return []
+    if cached[0] <= time.monotonic():
+        _GOOGLE_CACHE.pop(_normalize_query(query), None)
+        return []
+    return cached[2]
+
+
+def _normalized_metadata_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value).casefold())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return " ".join("".join(
+        char if char.isalnum() else " "
+        for char in normalized
+    ).split())
+
+
+def _normalized_language(value: object) -> str:
+    language = str(value or "").casefold().split("-", maxsplit=1)[0]
+    return {"iw": "he", "heb": "he", "eng": "en"}.get(language, language)
+
+
+def _google_enrichment_cover_url(image_links: object) -> str:
+    cover_url = _google_cover_url(image_links)
+    hostname = urlsplit(cover_url).hostname
+    if not hostname:
+        return ""
+    hostname = hostname.lower()
+    if hostname == "books.google.com" or hostname.endswith(".books.googleusercontent.com"):
+        return cover_url
+    return ""
+
+
+def _google_volume_cover_for_anna_result(result: dict, volumes: list[dict]) -> str:
+    expected_title = _normalized_metadata_text(result.get("title", ""))
+    expected_author_tokens = _aa_meaningful_tokens(result.get("author", ""))
+    expected_language = _normalized_language(result.get("language", ""))
+    if not expected_title:
+        return ""
+
+    matching_covers: set[str] = set()
+    for volume in volumes:
+        if not isinstance(volume, dict):
+            continue
+        volume_info = volume.get("volumeInfo")
+        if not isinstance(volume_info, dict):
+            continue
+        if _normalized_metadata_text(volume_info.get("title", "")) != expected_title:
+            continue
+
+        authors = volume_info.get("authors", [])
+        author = " ".join(str(name) for name in authors if name) if isinstance(authors, list) else ""
+        if expected_author_tokens and not (expected_author_tokens & _aa_meaningful_tokens(author)):
+            continue
+
+        candidate_language = _normalized_language(volume_info.get("language", ""))
+        if expected_language and candidate_language and expected_language != candidate_language:
+            continue
+
+        cover_url = _google_enrichment_cover_url(volume_info.get("imageLinks"))
+        if cover_url:
+            matching_covers.add(cover_url)
+
+    return matching_covers.pop() if len(matching_covers) == 1 else ""
+
+
+def _google_cover_cache_key(result: dict) -> tuple[str, str, str]:
+    return (
+        _normalized_metadata_text(result.get("title", "")),
+        " ".join(sorted(_aa_meaningful_tokens(result.get("author", "")))),
+        _normalized_language(result.get("language", "")),
+    )
+
+
+def _get_cached_google_cover(key: tuple[str, str, str], now: float) -> str | None:
+    cached = _GOOGLE_COVER_CACHE.get(key)
+    if not cached:
+        return None
+    if cached[0] <= now:
+        _GOOGLE_COVER_CACHE.pop(key, None)
+        return None
+    return cached[1]
+
+
+def _cache_google_cover(key: tuple[str, str, str], cover_url: str, now: float) -> None:
+    max_entries = max(1, settings.google_books_cover_cache_max_entries)
+    while len(_GOOGLE_COVER_CACHE) >= max_entries and key not in _GOOGLE_COVER_CACHE:
+        oldest_key = min(_GOOGLE_COVER_CACHE, key=lambda cached_key: _GOOGLE_COVER_CACHE[cached_key][0])
+        _GOOGLE_COVER_CACHE.pop(oldest_key, None)
+    _GOOGLE_COVER_CACHE[key] = (
+        now + settings.google_books_cover_cache_ttl_seconds,
+        cover_url,
+    )
+
+
+async def _fetch_google_books_cover_search(title: str, author: str) -> list[dict]:
+    if not settings.google_books_api_key:
+        raise GoogleBooksProviderError("invalid_configuration")
+
+    query = f'intitle:"{title}"'
+    if author:
+        query = f'{query} inauthor:"{author}"'
+    params = {
+        "q": query,
+        "maxResults": "5",
+        "printType": "books",
+        "key": settings.google_books_api_key,
+    }
+    timeout = aiohttp.ClientTimeout(total=settings.google_books_cover_timeout_seconds)
+    attempts = max(1, settings.google_books_cover_request_attempts)
+    for attempt in range(attempts):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+                _GOOGLE_BOOKS_VOLUMES_URL, params=params
+            ) as response:
+                if response.status >= 500:
+                    raise GoogleBooksProviderError("transient_server_error")
+                if response.status == 429:
+                    raise GoogleBooksProviderError("rate_limited")
+                if response.status in {401, 403}:
+                    raise GoogleBooksProviderError("quota_or_authorization")
+                if response.status >= 400:
+                    raise GoogleBooksProviderError("invalid_request")
+                try:
+                    payload = await response.json()
+                except (aiohttp.ContentTypeError, ValueError) as exc:
+                    raise GoogleBooksProviderError("malformed_response") from exc
+        except GoogleBooksProviderError as exc:
+            outcome_code = exc.outcome_code
+        except TimeoutError:
+            outcome_code = "timeout"
+        except aiohttp.ClientError:
+            outcome_code = "transport_error"
+        else:
+            volumes = payload.get("items", []) if isinstance(payload, dict) else []
+            if not isinstance(volumes, list):
+                raise GoogleBooksProviderError("malformed_response")
+            return volumes
+
+        if outcome_code not in {"transient_server_error", "rate_limited", "timeout", "transport_error"}:
+            raise GoogleBooksProviderError(outcome_code)
+        if attempt == attempts - 1:
+            raise GoogleBooksProviderError(outcome_code)
+        logger.warning(
+            f"Metadata provider=google_books_cover outcome={outcome_code} "
+            f"attempt={attempt + 1}/{attempts} action=retry"
+        )
+        await asyncio.sleep(attempt + 1)
+
+    raise GoogleBooksProviderError("unavailable")
+
+
+async def _enrich_anna_missing_covers(results: list[dict], query: str) -> list[dict]:
+    shared_volumes = _google_cached_volumes(query)
+    enriched_results: list[dict] = []
+    already_covered = 0
+    enriched = 0
+    cache_hits = 0
+    unmatched = 0
+    provider_failures = 0
+    provider_outcomes: dict[str, int] = {}
+    lookup_attempts = 0
+    lookup_limit = max(0, settings.google_books_cover_lookup_limit)
+
+    for result in results:
+        enriched_result = dict(result)
+        if enriched_result.get("cover_url"):
+            already_covered += 1
+            enriched_results.append(enriched_result)
+            continue
+
+        cache_key = _google_cover_cache_key(enriched_result)
+        now = time.monotonic()
+        cover_url = _get_cached_google_cover(cache_key, now)
+        if cover_url is not None:
+            cache_hits += 1
+        else:
+            cover_url = _google_volume_cover_for_anna_result(enriched_result, shared_volumes)
+            if not cover_url and lookup_attempts < lookup_limit:
+                lookup_attempts += 1
+                try:
+                    volumes = await _fetch_google_books_cover_search(
+                        str(enriched_result.get("title", "")),
+                        str(enriched_result.get("author", "")),
+                    )
+                except GoogleBooksProviderError as exc:
+                    provider_failures += 1
+                    provider_outcomes[exc.outcome_code] = provider_outcomes.get(exc.outcome_code, 0) + 1
+                    _record_google_provider_failure(exc.outcome_code)
+                else:
+                    _record_google_provider_success()
+                    cover_url = _google_volume_cover_for_anna_result(enriched_result, volumes)
+                    _cache_google_cover(cache_key, cover_url, now)
+                    if (
+                        not cover_url
+                        and enriched_result.get("author")
+                        and lookup_attempts < lookup_limit
+                    ):
+                        lookup_attempts += 1
+                        try:
+                            title_only_volumes = await _fetch_google_books_cover_search(
+                                str(enriched_result.get("title", "")),
+                                "",
+                            )
+                        except GoogleBooksProviderError as exc:
+                            provider_failures += 1
+                            provider_outcomes[exc.outcome_code] = provider_outcomes.get(exc.outcome_code, 0) + 1
+                            _record_google_provider_failure(exc.outcome_code)
+                        else:
+                            _record_google_provider_success()
+                            cover_url = _google_volume_cover_for_anna_result(
+                                enriched_result,
+                                title_only_volumes,
+                            )
+                            _cache_google_cover(cache_key, cover_url, now)
+            elif not cover_url:
+                unmatched += 1
+
+        if cover_url:
+            enriched_result["cover_url"] = cover_url
+            enriched += 1
+        elif cache_key in _GOOGLE_COVER_CACHE:
+            unmatched += 1
+        enriched_results.append(enriched_result)
+
+    logger.info(
+        f"Anna cover enrichment results={len(results)} already_covered={already_covered} "
+        f"enriched={enriched} cache_hits={cache_hits} unmatched={unmatched} "
+        f"lookup_attempts={lookup_attempts} provider_failures={provider_failures} "
+        f"provider_outcomes={provider_outcomes}"
+    )
+    return enriched_results
 
 
 @log_call
 async def search_books(query: str) -> list[dict]:
     try:
-        google_results = _parse_google_books_results(await _fetch_google_books_search(query))
-    except RuntimeError:
-        logger.warning("Metadata fallback decision google_books=unavailable next=annas_archive")
+        google_results = await _google_metadata_results(query)
+    except GoogleBooksProviderError as exc:
+        logger.warning(f"Metadata fallback decision google_books={exc.outcome_code} next=annas_archive")
         google_results = []
     if google_results:
         logger.info(f"Metadata provider decision selected=google_books results={len(google_results)}")
         return google_results
 
     logger.info("Metadata fallback decision google_books=no_selectable_isbn next=annas_archive")
-    return await _search_aa_metadata(query)
+    anna_results = await _search_aa_metadata(query)
+    return await _enrich_anna_missing_covers(anna_results, query)
 
 
 async def _download_via_libgen(
@@ -471,13 +958,12 @@ async def _download_via_libgen(
 async def _download_via_annas_archive(
     md5_list: list[str], isbn: str = "", on_status=None
 ) -> Path:
-    if on_status:
-        on_status("trying_alternative")
+    _emit_status(on_status, "trying_alternative", source="annas_archive")
     last_error: Exception | None = None
     for md5 in md5_list:
         try:
             logger.info(f"Download decision source=annas_archive md5={md5} action=attempt")
-            return await download_book_from_annas_archive(md5, isbn=isbn)
+            return await download_book_from_annas_archive(md5, isbn=isbn, on_status=on_status)
         except (DownloadError, Exception) as e:
             logger.warning(f"Download decision source=annas_archive md5={md5} outcome=failed type={e.__class__.__name__}")
             last_error = e
@@ -515,12 +1001,11 @@ async def _try_convert_mobi(mobi_path: Path) -> Path:
 
 
 async def ebook_download_by_md5(md5: str, kindle_mail: str, on_status=None) -> None:
-    def _emit(status):
-        if on_status:
-            on_status(status)
+    def _emit(status, **details):
+        _emit_status(on_status, status, **details)
 
     logger.info(f"Download decision source=libgen_md5 md5={md5}")
-    _emit("downloading")
+    _emit("downloading", source="libgen")
     book_path = await _download_via_libgen(md5, [md5], require_confirmation=False)
 
     logger.info("Download decision source=libgen_md5 file=ready next=kindle_delivery")
@@ -531,17 +1016,18 @@ async def ebook_download_by_md5(md5: str, kindle_mail: str, on_status=None) -> N
 
 
 async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=None) -> None:
-    def _emit(status):
-        if on_status:
-            on_status(status)
+    def _emit(status, **details):
+        _emit_status(on_status, status, **details)
 
     logger.info(f"Download decision source=annas_archive md5={md5}")
-    _emit("downloading")
     last_error: DownloadError | None = None
     book_path: Path | None = None
     for attempt in range(2):
         try:
-            book_path = await download_book_from_annas_archive(md5)
+            if attempt == 0:
+                _emit("downloading")
+            _emit("downloading", source="annas_archive", attempt=attempt + 1)
+            book_path = await download_book_from_annas_archive(md5, on_status=_emit)
             break
         except DownloadError as exc:
             last_error = exc
@@ -563,11 +1049,11 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
 
 
 async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -> None:
-    def _emit(status):
-        if on_status:
-            on_status(status)
+    def _emit(status, **details):
+        _emit_status(on_status, status, **details)
 
     _emit("fetching_isbn")
+    _emit("fetching_isbn", source="goodreads")
     book_info = await get_book_info(goodreads_url)
     await ebook_download_from_metadata(
         book_info["isbn"],
@@ -581,12 +1067,12 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
 async def ebook_download_from_metadata(
     isbn: str, title: str, kindle_mail: str, on_status=None, author: str = ""
 ) -> None:
-    def _emit(status):
-        if on_status:
-            on_status(status)
+    def _emit(status, **details):
+        _emit_status(on_status, status, **details)
 
     logger.info(f"Download decision source=metadata isbn={isbn} title={title!r} next=archive_search")
     _emit("searching")
+    _emit("searching", source="annas_archive")
     all_hashes = await search_aa_all_formats(isbn, title=title)
     epub_hashes = all_hashes.get("epub", [])
     pdf_hashes = all_hashes.get("pdf", [])
@@ -600,7 +1086,6 @@ async def ebook_download_from_metadata(
         f"Download decision format_candidates epub={len(epub_hashes)} pdf={len(pdf_hashes)} mobi={len(mobi_hashes)}"
     )
     _emit("downloading")
-
     last_error: Exception | None = None
     fallback_error: ManualDownloadRequiredError | None = None
     book_path: Path | None = None
@@ -609,6 +1094,7 @@ async def ebook_download_from_metadata(
     if epub_hashes:
         try:
             logger.info("Download decision branch=libgen_epub")
+            _emit("downloading", source="libgen", file_format="epub", attempt=1)
             book_path = await _download_via_libgen(isbn, epub_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (epub): {book_path.name}")
         except (ConnectionError, DownloadError, BookNotFoundError) as e:
@@ -621,6 +1107,7 @@ async def ebook_download_from_metadata(
     if book_path is None and pdf_hashes:
         try:
             logger.info("Download decision branch=libgen_pdf reason=epub_unavailable_or_failed")
+            _emit("downloading", source="libgen", file_format="pdf", attempt=1)
             book_path = await _download_via_libgen(isbn, pdf_hashes, title=title, author=author)
             logger.info(f"Downloaded via LibGen (pdf): {book_path.name}")
             last_error = None
@@ -635,6 +1122,7 @@ async def ebook_download_from_metadata(
     if book_path is None and mobi_hashes:
         try:
             logger.info("Download decision branch=libgen_mobi reason=preferred_formats_unavailable_or_failed")
+            _emit("downloading", source="libgen", file_format="mobi", attempt=1)
             book_path = await _download_via_libgen(isbn, mobi_hashes, title=title, author=author)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via LibGen (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
@@ -650,6 +1138,7 @@ async def ebook_download_from_metadata(
     if book_path is None and epub_hashes:
         try:
             logger.info("Download decision branch=annas_epub reason=libgen_paths_failed")
+            _emit("trying_alternative", source="annas_archive", file_format="epub", attempt=1)
             book_path = await _download_via_annas_archive(epub_hashes, isbn=isbn, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (epub): {book_path.name}")
             last_error = None
@@ -662,6 +1151,7 @@ async def ebook_download_from_metadata(
     if book_path is None and pdf_hashes:
         try:
             logger.info("Download decision branch=annas_pdf reason=prior_paths_failed")
+            _emit("trying_alternative", source="annas_archive", file_format="pdf", attempt=1)
             book_path = await _download_via_annas_archive(pdf_hashes, isbn=isbn, on_status=_emit)
             logger.info(f"Downloaded via Anna's Archive (pdf): {book_path.name}")
             last_error = None
@@ -674,6 +1164,7 @@ async def ebook_download_from_metadata(
     if book_path is None and mobi_hashes:
         try:
             logger.info("Download decision branch=annas_mobi reason=prior_paths_failed")
+            _emit("trying_alternative", source="annas_archive", file_format="mobi", attempt=1)
             book_path = await _download_via_annas_archive(mobi_hashes, isbn=isbn, on_status=_emit)
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via Anna's Archive (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")

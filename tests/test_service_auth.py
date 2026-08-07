@@ -148,6 +148,29 @@ def test_google_callback_stores_session_and_exposes_authenticated_user(client, m
     }
 
 
+def test_access_log_strips_oauth_callback_query_string(client, monkeypatch):
+    _install_google_client(monkeypatch)
+    logged_messages = []
+
+    def fake_info(message, *args, **kwargs):
+        logged_messages.append(message)
+
+    monkeypatch.setattr(service.logger, "info", fake_info)
+
+    response = client.get(
+        "/auth/google/callback?code=oauth-code-that-must-not-be-logged&state=oauth-state-that-must-not-be-logged",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    access_records = [message for message in logged_messages if message.startswith("HTTP access ")]
+    assert access_records == [
+        "HTTP access method=GET path=/auth/google/callback status=302 client_ip=testclient"
+    ]
+    assert all("oauth-code-that-must-not-be-logged" not in message for message in logged_messages)
+    assert all("oauth-state-that-must-not-be-logged" not in message for message in logged_messages)
+
+
 @pytest.mark.asyncio
 async def test_google_callback_logs_authenticated_email_once(monkeypatch):
     logged_messages = []

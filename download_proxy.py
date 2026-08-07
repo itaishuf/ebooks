@@ -14,8 +14,6 @@ from urllib.parse import urljoin, urlsplit
 from aiohttp import ClientSession, ClientTimeout, web
 from curl_cffi.requests import AsyncSession
 
-from abuse_protection import sanitize_error_detail, sanitize_for_log
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -67,6 +65,34 @@ async def _fetch_safe_download(session: AsyncSession, url: str, headers: dict[st
     raise ValueError("download exceeded the redirect limit")
 
 
+async def _fetch_safe_standard_download(
+    session: ClientSession, url: str, headers: dict[str, str], cookies: dict[str, str]
+):
+    current_url = url
+    for redirect_count in range(_MAX_REDIRECTS + 1):
+        if not await _is_safe_download_url(current_url):
+            logger.warning(f"Proxy decision standard_https=rejected reason=unsafe_destination redirects={redirect_count}")
+            raise ValueError("download URL is not a permitted public HTTPS destination")
+        response = await session.get(
+            current_url,
+            headers=headers,
+            cookies=cookies,
+            allow_redirects=False,
+            timeout=ClientTimeout(total=300),
+        )
+        if response.status not in {301, 302, 303, 307, 308}:
+            logger.info(f"Proxy decision standard_https=response status={response.status} redirects={redirect_count}")
+            return response
+        location = response.headers.get("Location")
+        response.release()
+        if not location:
+            logger.warning("Proxy decision standard_https=rejected reason=missing_location")
+            raise ValueError("download redirect is missing a location")
+        current_url = urljoin(current_url, location)
+    logger.warning("Proxy decision standard_https=rejected reason=redirect_limit")
+    raise ValueError("download exceeded the redirect limit")
+
+
 async def handle_download(request: web.Request) -> web.Response:
     url = request.rel_url.query.get("url", "")
     if not url:
@@ -83,33 +109,28 @@ async def handle_download(request: web.Request) -> web.Response:
             k, _, v = part.partition("=")
             cookies[k.strip()] = v.strip()
 
-    safe_url = sanitize_for_log(url[:80])
-    logger.info(f"Proxying download: {safe_url} cookies={list(cookies.keys())}")
+    logger.info("Proxy decision request=accepted")
     try:
         headers = {"User-Agent": user_agent, "Referer": referer}
         try:
             async with AsyncSession(impersonate="chrome124") as session:
                 resp = await _fetch_safe_download(session, url, headers, cookies)
-        except Exception as curl_error:
-            logger.warning(f"Chrome-impersonated download failed for {safe_url}; trying standard HTTPS client")
-            if not await _is_safe_download_url(url):
-                logger.warning("Proxy decision standard_https=skipped reason=unsafe_destination")
-                raise curl_error
+        except Exception:
+            logger.warning("Proxy decision chrome_tls=failed next=standard_https")
             async with ClientSession(headers=headers, cookies=cookies) as session:
-                response = await session.get(url, allow_redirects=False, timeout=ClientTimeout(total=300))
-                logger.info(f"Proxy decision standard_https=response status={response.status}")
+                response = await _fetch_safe_standard_download(session, url, headers, cookies)
                 content_type = response.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
                 return web.Response(body=await response.read(), status=response.status, content_type=content_type)
-        logger.info(f"Proxy got HTTP {resp.status_code} for {safe_url}")
+        logger.info(f"Proxy decision chrome_tls=success status={resp.status_code}")
         content_type = resp.headers.get("Content-Type", "application/octet-stream").split(";", 1)[0]
         return web.Response(body=resp.content, status=resp.status_code, content_type=content_type)
-    except Exception as e:
-        logger.error(f"Proxy error for {safe_url}: {sanitize_for_log(e)}")
-        return web.Response(status=502, text=sanitize_error_detail(e, "Download failed"))
+    except Exception:
+        logger.error("Proxy decision terminal=transport_failure")
+        return web.Response(status=502, text="Download failed")
 
 
 app = web.Application()
 app.router.add_get("/download", handle_download)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=8192)
+    web.run_app(app, host="0.0.0.0", port=8192, access_log=None)

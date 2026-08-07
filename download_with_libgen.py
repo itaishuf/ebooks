@@ -90,9 +90,9 @@ def _libgen_identity_confirmed(
     page title; author must have all its meaningful tokens present on the page
     (order-insensitive so "King, Stephen" matches "Stephen King").
     """
-    from download_flow import _aa_result_is_relevant, _aa_meaningful_tokens
+    from download_flow import _aa_title_phrase_matches, _aa_meaningful_tokens
 
-    if not _aa_result_is_relevant(requested_title, page_title, ""):
+    if not _aa_title_phrase_matches(requested_title, page_title):
         return False
     if not requested_author:
         return True

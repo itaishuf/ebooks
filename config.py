@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     max_jobs_per_user: int = 5
     max_jobs_per_ip: int = 5
     overload_retry_after_seconds: int = 30
+    job_stage_timeout_seconds: int = 12 * 60
 
     # Libgen mirrors
     libgen_mirrors: list[str] = [
@@ -94,6 +95,20 @@ class Settings(BaseSettings):
     # Download proxy — runs on the internal network with direct internet access
     # (no Tailscale), uses curl_cffi Chrome impersonation for TLS fingerprinting.
     download_proxy_url: str = "http://download-proxy:8192"
+    anna_partner_attempt_limit: int = 3
+    anna_partner_failure_cooldown_seconds: int = 15 * 60
+    anna_partner_failure_threshold: int = 2
+
+    # Metadata-provider resilience. These values bound degraded-provider work
+    # without persisting queries or provider responses outside this process.
+    google_books_cache_ttl_seconds: int = 5 * 60
+    google_books_circuit_cooldown_seconds: int = 60
+    google_books_circuit_failure_threshold: int = 2
+    google_books_cover_cache_ttl_seconds: int = 60 * 60
+    google_books_cover_cache_max_entries: int = 256
+    google_books_cover_lookup_limit: int = 4
+    google_books_cover_timeout_seconds: int = 5
+    google_books_cover_request_attempts: int = 2
 
     # Selenium
     selenium_download_timeout_minutes: int = 10

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -226,6 +227,42 @@ async def test_run_job_maps_manual_fallback_error_to_job():
         "url": "https://libgen.test/get.php?md5=123",
         "message": "Try downloading the file manually from LibGen.",
     }
+    assert service.jobs[job_id]["error_code"] == "manual_download_available"
+
+
+def test_public_job_payload_exposes_only_safe_recovery_fields():
+    service.jobs.clear()
+    job_id = service._make_job(source="annas_archive")
+    service.jobs[job_id].update(
+        current_source="annas_archive",
+        format="epub",
+        attempt_summary={"downloading": 2},
+        owner_email="private@example.com",
+        client_ip="192.0.2.10",
+    )
+
+    payload = service._public_job_payload(service.jobs[job_id])
+
+    assert payload["current_source"] == "annas_archive"
+    assert payload["format"] == "epub"
+    assert payload["attempt_summary"] == {"downloading": 2}
+    assert "owner_email" not in payload
+    assert "client_ip" not in payload
+
+
+@pytest.mark.asyncio
+async def test_run_job_terminates_stalled_stage(monkeypatch):
+    service.jobs.clear()
+    job_id = service._make_job()
+    monkeypatch.setattr(service.settings, "job_stage_timeout_seconds", 0)
+
+    async def stalled_coro():
+        await asyncio.sleep(60)
+
+    await service._run_job(job_id, stalled_coro())
+
+    assert service.jobs[job_id]["status"] == "error"
+    assert service.jobs[job_id]["error_code"] == "stage_timeout"
 
 
 @pytest.mark.asyncio
@@ -325,6 +362,194 @@ def test_page_isbns_empty_on_no_isbn():
     assert download_with_annas_archive._page_isbns(_HTML_NO_ISBN) == []
 
 
+def test_slow_partner_selection_prefers_recent_success_and_skips_cooldown(monkeypatch):
+    urls = [
+        "https://annas.example/slow_download/first",
+        "https://annas.example/slow_download/second",
+        "https://annas.example/slow_download/third",
+    ]
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    download_with_annas_archive._PARTNER_HEALTH["/slow_download/second"] = {
+        "successes": 3,
+        "failures": 0,
+        "cooldown_until": 0.0,
+    }
+    download_with_annas_archive._PARTNER_HEALTH["/slow_download/first"] = {
+        "successes": 0,
+        "failures": 2,
+        "cooldown_until": 200.0,
+    }
+    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 3)
+
+    selected = download_with_annas_archive._rank_slow_partner_urls(urls, now=100.0)
+
+    assert selected == [urls[1], urls[2]]
+
+
+@pytest.mark.asyncio
+async def test_slow_partner_attempts_are_bounded_and_classified(monkeypatch, tmp_path):
+    urls = [
+        "https://annas.example/slow_download/one",
+        "https://annas.example/slow_download/two",
+        "https://annas.example/slow_download/three",
+    ]
+    attempts = []
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
+    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 2)
+
+    async def fake_solve(_md5, slow_url):
+        attempts.append(slow_url)
+        raise download_with_annas_archive.AnnaPartnerError("no_rendered_link")
+
+    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
+
+    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="no_rendered_link"):
+        await download_with_annas_archive._download_via_slow_partners("deadbeef", urls)
+
+    assert attempts == urls[:2]
+
+
+class _FakeProxyResponse:
+    def __init__(self, content: bytes, headers: dict):
+        self.status = 200
+        self.headers = headers
+        self._content = content
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def read(self) -> bytes:
+        return self._content
+
+
+class _FakeProxySession:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def get(self, *_args, **_kwargs):
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_slow_partner_sanitizes_content_disposition_filename(monkeypatch, tmp_path):
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
+
+    async def fake_solve(_md5, slow_url):
+        return {}, "user-agent", "https://download.example/book.epub?signature=secret"
+
+    response = _FakeProxyResponse(b"book-data", {"Content-Disposition": 'attachment; filename="../../evil.epub"'})
+    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
+    monkeypatch.setattr(
+        download_with_annas_archive.aiohttp,
+        "ClientSession",
+        lambda *_args, **_kwargs: _FakeProxySession(response),
+    )
+
+    path = await download_with_annas_archive._download_via_slow_partners(
+        "deadbeef", ["https://annas.example/slow_download/one"]
+    )
+
+    assert path == tmp_path / "aa-deadbeef" / "evil.epub"
+    assert path.read_bytes() == b"book-data"
+    assert not (tmp_path / "evil.epub").exists()
+
+
+@pytest.mark.asyncio
+async def test_slow_partner_rejects_oversized_response(monkeypatch, tmp_path):
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
+    monkeypatch.setattr(download_with_annas_archive, "_MAX_DOWNLOAD_BYTES", 10)
+
+    async def fake_solve(_md5, slow_url):
+        return {}, "user-agent", "https://download.example/book.epub"
+
+    response = _FakeProxyResponse(b"x" * 20, {"Content-Length": "20"})
+    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
+    monkeypatch.setattr(
+        download_with_annas_archive.aiohttp,
+        "ClientSession",
+        lambda *_args, **_kwargs: _FakeProxySession(response),
+    )
+
+    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="file_too_large"):
+        await download_with_annas_archive._download_via_slow_partners(
+            "deadbeef", ["https://annas.example/slow_download/one"]
+        )
+    assert not (tmp_path / "aa-deadbeef").exists() or not any((tmp_path / "aa-deadbeef").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_slow_partner_emits_status_per_attempt(monkeypatch, tmp_path):
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
+    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 3)
+
+    emits = []
+
+    async def fake_solve(_md5, slow_url):
+        if slow_url.endswith(("one", "two")):
+            raise download_with_annas_archive.AnnaPartnerError("no_rendered_link")
+        return {}, "user-agent", "https://download.example/book.epub"
+
+    def on_status(status, **details):
+        emits.append((status, details))
+
+    response = _FakeProxyResponse(b"book-data", {"Content-Disposition": 'filename="book.epub"'})
+    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
+    monkeypatch.setattr(
+        download_with_annas_archive.aiohttp,
+        "ClientSession",
+        lambda *_args, **_kwargs: _FakeProxySession(response),
+    )
+
+    path = await download_with_annas_archive._download_via_slow_partners(
+        "deadbeef",
+        [
+            "https://annas.example/slow_download/one",
+            "https://annas.example/slow_download/two",
+            "https://annas.example/slow_download/three",
+        ],
+        on_status=on_status,
+    )
+
+    assert path.name == "book.epub"
+    assert emits == [
+        ("downloading", {"source": "annas_archive", "attempt": 1}),
+        ("downloading", {"source": "annas_archive", "attempt": 2}),
+        ("downloading", {"source": "annas_archive", "attempt": 3}),
+    ]
+
+
+def test_partner_health_evicts_entries_to_stay_bounded(monkeypatch):
+    download_with_annas_archive._PARTNER_HEALTH.clear()
+    monkeypatch.setattr(download_with_annas_archive, "_PARTNER_HEALTH_MAX_ENTRIES", 3)
+    future = download_with_annas_archive.time.monotonic() + 3600
+    for key in ("/a", "/b", "/c"):
+        download_with_annas_archive._PARTNER_HEALTH[key] = {
+            "successes": 0,
+            "failures": 0,
+            "cooldown_until": future,
+        }
+
+    download_with_annas_archive._record_partner_outcome(
+        "https://annas.example/slow_download/d", success=False
+    )
+
+    assert set(download_with_annas_archive._PARTNER_HEALTH) == {"/b", "/c", "/slow_download/d"}
+    assert int(download_with_annas_archive._PARTNER_HEALTH["/slow_download/d"]["failures"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch):
     """MD5 page with a different ISBN raises DownloadError without fetching further."""
@@ -395,10 +620,87 @@ async def test_search_books_uses_google_books_metadata(monkeypatch, caplog):
     assert "language_codes=['en']" in caplog.text
 
 
+def test_google_cover_url_prefers_largest_supported_image():
+    assert download_flow._google_cover_url(
+        {
+            "smallThumbnail": "https://images.example/small.jpg",
+            "thumbnail": "https://images.example/thumbnail.jpg",
+            "large": "http://images.example/large.jpg#fragment",
+        }
+    ) == "https://images.example/large.jpg"
+
+
+@pytest.mark.parametrize(
+    "image_links",
+    [
+        {"thumbnail": "relative-cover.jpg"},
+        {"thumbnail": "ftp://images.example/cover.jpg"},
+        {"thumbnail": "https://user:password@images.example/cover.jpg"},
+        {"thumbnail": "http://127.0.0.1/cover.jpg"},
+        {"thumbnail": "https://covers.local/cover.jpg"},
+        {"thumbnail": ["not-a-url"]},
+    ],
+)
+def test_google_cover_url_rejects_unsafe_or_malformed_values(image_links):
+    assert download_flow._google_cover_url(image_links) == ""
+
+
+@pytest.mark.asyncio
+async def test_google_cover_search_retries_transient_provider_failure(monkeypatch):
+    statuses = [503, 200]
+    calls = 0
+
+    class FakeResponse:
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self):
+            return {"items": []}
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def get(self, _url, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return FakeResponse(statuses.pop(0))
+
+    async def no_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr(download_flow.settings, "google_books_api_key", "test-key")
+    monkeypatch.setattr(download_flow.settings, "google_books_cover_request_attempts", 2)
+    monkeypatch.setattr(download_flow.aiohttp, "ClientSession", FakeSession)
+    monkeypatch.setattr(download_flow.asyncio, "sleep", no_sleep)
+
+    assert await download_flow._fetch_google_books_cover_search("Example Book", "Example Author") == []
+    assert calls == 2
+
+
+def test_carousel_uses_google_result_cover_url_contract():
+    page = Path(__file__).parents[1] / "static" / "index.html"
+
+    assert '<img :src="r.cover_url" :alt="r.title"' in page.read_text()
+
+
 _AA_METADATA_HTML = """
 <div class="js-aarecord-list-outer">
   <div class="flex">
     <a href="/md5/0123456789abcdef0123456789abcdef"></a>
+    <img src="http://covers.example/hebrew-book.jpg#preview" alt="">
     <div>
       <a class="text-lg">הביתה</a>
       <a class="text-sm">אסף ענברי</a>
@@ -434,13 +736,54 @@ def test_parse_aa_metadata_results_returns_unique_supported_records():
             "title": "הביתה",
             "author": "אסף ענברי",
             "isbn": "",
-            "cover_url": "",
+            "cover_url": "https://covers.example/hebrew-book.jpg",
             "md5": "0123456789abcdef0123456789abcdef",
             "format": "epub",
             "language": "he",
             "source": "annas_archive",
         }
     ]
+
+
+def test_parse_aa_metadata_results_reads_all_cards_in_a_container():
+    html = """
+    <div class="js-aarecord-list-outer">
+      <div class="flex">
+        <a href="/md5/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"></a>
+        <img src="https://covers.example/first.jpg">
+        <div>
+          <a class="text-lg">First book</a>
+          <a class="text-sm">First author</a>
+          <div class="text-gray-800 font-semibold text-sm">English [en] · EPUB</div>
+        </div>
+      </div>
+      <div class="flex">
+        <a href="/md5/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"></a>
+        <img src="https://covers.example/second.jpg">
+        <div>
+          <a class="text-lg">Second book</a>
+          <a class="text-sm">Second author</a>
+          <div class="text-gray-800 font-semibold text-sm">Hebrew [he] · PDF</div>
+        </div>
+      </div>
+    </div>
+    """
+
+    results = download_flow._parse_aa_metadata_results(html)
+
+    assert [(result["title"], result["cover_url"]) for result in results] == [
+        ("First book", "https://covers.example/first.jpg"),
+        ("Second book", "https://covers.example/second.jpg"),
+    ]
+
+
+def test_parse_aa_metadata_results_rejects_unsafe_cover_url():
+    html = _AA_METADATA_HTML.replace(
+        "http://covers.example/hebrew-book.jpg#preview",
+        "http://127.0.0.1/private-cover.jpg",
+    )
+
+    assert download_flow._parse_aa_metadata_results(html)[0]["cover_url"] == ""
 
 
 @pytest.mark.asyncio
@@ -460,12 +803,321 @@ async def test_search_books_falls_back_to_aa_when_google_has_no_isbn(monkeypatch
     ]
 
 
+@pytest.mark.parametrize(
+    ("query", "title", "author", "expected"),
+    [
+        ("The Dune", "Dune", "Frank Herbert", True),
+        ("Frank Herbert", "Children of Dune", "Frank Herbert", True),
+        ("Dune Frank Herbert", "Dune", "Frank Herbert", True),
+        ("Frank Herbert Dune", "Dune", "Frank Herbert", True),
+        ("הַבַּיְתָה!", "הביתה", "אסף ענברי", True),
+        ("the and of", "Unrelated", "Nobody", False),
+        ("art", "Earth", "Someone", False),
+        ("נתן עמוס", "על האינדיאנים", "מגד עמוס רון נתן", True),
+        ("   ", "Dune", "Frank Herbert", False),
+    ],
+)
+def test_aa_result_relevance_matches_meaningful_title_or_author_tokens(
+    query, title, author, expected
+):
+    assert download_flow._aa_result_is_relevant(query, title, author) is expected
+
+
+@pytest.mark.asyncio
+async def test_aa_metadata_filter_runs_before_result_limit_and_preserves_download_fields(monkeypatch):
+    records = []
+    for index in range(20):
+        records.append(
+            f"""
+            <div class="flex">
+              <a href="/md5/{index:032x}"></a>
+              <div>
+                <a class="text-lg">Unrelated volume {index}</a>
+                <a class="text-sm">Other author</a>
+                <div class="text-gray-800 font-semibold text-sm">English [en] · EPUB</div>
+              </div>
+            </div>
+            """
+        )
+    records.append(
+        """
+        <div class="flex">
+          <a href="/md5/ffffffffffffffffffffffffffffffff"></a>
+          <div>
+            <a class="text-lg">Target book</a>
+            <a class="text-sm">Target author</a>
+            <div class="text-gray-800 font-semibold text-sm">Hebrew [he] · PDF</div>
+          </div>
+        </div>
+        """
+    )
+    html = f'<div class="js-aarecord-list-outer">{"".join(records)}</div>'
+
+    async def fake_fetch(_url: str) -> str:
+        return html
+
+    monkeypatch.setattr(download_flow.settings, "annas_archive_url", "https://annas.example")
+    monkeypatch.setattr(download_flow, "_fetch_page_with_retry", fake_fetch)
+
+    results = await download_flow._search_aa_metadata("Target author")
+
+    assert results == [
+        {
+            "title": "Target book",
+            "author": "Target author",
+            "isbn": "",
+            "cover_url": "",
+            "md5": "ffffffffffffffffffffffffffffffff",
+            "format": "pdf",
+            "language": "he",
+            "source": "annas_archive",
+        }
+    ]
+
+
+def _anna_result(**overrides) -> dict:
+    result = {
+        "title": "Example Book",
+        "author": "Example Author",
+        "isbn": "",
+        "cover_url": "",
+        "md5": "0123456789abcdef0123456789abcdef",
+        "format": "epub",
+        "language": "en",
+        "source": "annas_archive",
+    }
+    result.update(overrides)
+    return result
+
+
+def _google_volume(
+    *,
+    title: str = "Example Book",
+    author: str = "Example Author",
+    language: str = "en",
+    cover_url: str = "https://books.google.com/books/content?id=example",
+) -> dict:
+    return {
+        "volumeInfo": {
+            "title": title,
+            "authors": [author],
+            "language": language,
+            "imageLinks": {"thumbnail": cover_url},
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_anna_cover_enrichment_preserves_download_fields(monkeypatch):
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_COVER_CACHE.clear()
+
+    async def fake_cover_search(_title: str, _author: str) -> list[dict]:
+        return [_google_volume()]
+
+    original = _anna_result()
+    monkeypatch.setattr(download_flow, "_fetch_google_books_cover_search", fake_cover_search)
+
+    results = await download_flow._enrich_anna_missing_covers([original], "Example Book")
+
+    assert original["cover_url"] == ""
+    assert results == [
+        {
+            **original,
+            "cover_url": "https://books.google.com/books/content?id=example",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anna_cover_enrichment_reuses_primary_google_response(monkeypatch):
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_COVER_CACHE.clear()
+
+    async def fake_primary_search(_query: str) -> list[dict]:
+        return [_google_volume()]
+
+    async def fake_aa_search(_query: str) -> list[dict]:
+        return [_anna_result()]
+
+    async def cover_search_must_not_run(_title: str, _author: str) -> list[dict]:
+        raise AssertionError("primary Google response should provide the cover")
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_search", fake_primary_search)
+    monkeypatch.setattr(download_flow, "_search_aa_metadata", fake_aa_search)
+    monkeypatch.setattr(download_flow, "_fetch_google_books_cover_search", cover_search_must_not_run)
+
+    results = await download_flow.search_books("Example Book")
+
+    assert results[0]["cover_url"] == "https://books.google.com/books/content?id=example"
+    assert results[0]["md5"] == "0123456789abcdef0123456789abcdef"
+    assert results[0]["source"] == "annas_archive"
+
+
+@pytest.mark.asyncio
+async def test_anna_cover_enrichment_skips_existing_cover_and_uses_negative_cache(monkeypatch):
+    download_flow._GOOGLE_COVER_CACHE.clear()
+    calls = 0
+
+    async def fake_cover_search(_title: str, _author: str) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_cover_search", fake_cover_search)
+
+    covered = _anna_result(cover_url="https://archive.org/cover.jpg")
+    missing = _anna_result(title="No cover")
+    first = await download_flow._enrich_anna_missing_covers([covered, missing], "No cover")
+    second = await download_flow._enrich_anna_missing_covers([missing], "No cover")
+
+    assert first[0] == covered
+    assert first[1]["cover_url"] == ""
+    assert second[0]["cover_url"] == ""
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_anna_cover_enrichment_rejects_mismatched_or_unsafe_google_candidates(monkeypatch):
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_COVER_CACHE.clear()
+    mismatched = [
+        _google_volume(author="Different Author"),
+        _google_volume(language="he"),
+        _google_volume(cover_url="https://untrusted.example/cover.jpg"),
+    ]
+
+    async def fake_cover_search(_title: str, _author: str) -> list[dict]:
+        return mismatched
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_cover_search", fake_cover_search)
+
+    assert await download_flow._enrich_anna_missing_covers([_anna_result()], "Example Book") == [
+        _anna_result()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anna_cover_enrichment_bounds_lookup_attempts_and_provider_failures(monkeypatch, caplog):
+    download_flow._GOOGLE_COVER_CACHE.clear()
+    download_flow._GOOGLE_BREAKER.update(consecutive_failures=0, open_until=0.0)
+    calls = 0
+
+    async def fake_cover_search(_title: str, _author: str) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        raise download_flow.GoogleBooksProviderError("timeout")
+
+    monkeypatch.setattr(download_flow.settings, "google_books_cover_lookup_limit", 2)
+    monkeypatch.setattr(download_flow, "_fetch_google_books_cover_search", fake_cover_search)
+    caplog.set_level(logging.INFO, logger="download_flow")
+    results = await download_flow._enrich_anna_missing_covers(
+        [_anna_result(title=f"Book {index}") for index in range(5)],
+        "Book",
+    )
+
+    assert calls == 2
+    assert all(result["cover_url"] == "" for result in results)
+    assert all(result["md5"] == "0123456789abcdef0123456789abcdef" for result in results)
+    assert "provider_outcomes={'timeout': 2}" in caplog.text
+    assert "books.google.com/books/content" not in caplog.text
+    download_flow._GOOGLE_BREAKER.update(consecutive_failures=0, open_until=0.0)
+
+
+def test_google_cover_cache_is_bounded_and_expires(monkeypatch):
+    download_flow._GOOGLE_COVER_CACHE.clear()
+    monkeypatch.setattr(download_flow.settings, "google_books_cover_cache_max_entries", 1)
+    monkeypatch.setattr(download_flow.settings, "google_books_cover_cache_ttl_seconds", 1)
+    first_key = ("first", "", "en")
+    second_key = ("second", "", "en")
+
+    download_flow._cache_google_cover(first_key, "", now=10.0)
+    download_flow._cache_google_cover(second_key, "https://books.google.com/books/content?id=second", now=11.0)
+
+    assert first_key not in download_flow._GOOGLE_COVER_CACHE
+    assert download_flow._get_cached_google_cover(second_key, now=11.5)
+    assert download_flow._get_cached_google_cover(second_key, now=12.1) is None
+
+
+@pytest.mark.asyncio
+async def test_search_books_uses_cached_google_results(monkeypatch):
+    calls = 0
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_BREAKER.update(consecutive_failures=0, open_until=0.0)
+
+    async def fake_google_search(_query: str) -> list[dict]:
+        nonlocal calls
+        calls += 1
+        return [
+            {
+                "volumeInfo": {
+                    "title": "Dune",
+                    "authors": ["Frank Herbert"],
+                    "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780441172719"}],
+                }
+            }
+        ]
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_search", fake_google_search)
+
+    first = await download_flow.search_books("Dune")
+    second = await download_flow.search_books("  dune  ")
+
+    assert first == second
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_search_books_uses_anna_while_google_circuit_is_open(monkeypatch):
+    download_flow._GOOGLE_CACHE.clear()
+    download_flow._GOOGLE_BREAKER.update(consecutive_failures=2, open_until=download_flow.time.monotonic() + 60)
+
+    async def google_must_not_run(_query: str) -> list[dict]:
+        raise AssertionError("open circuit must skip Google")
+
+    async def fake_aa_search(_query: str) -> list[dict]:
+        return [{"title": "Fallback book", "md5": "0123456789abcdef0123456789abcdef"}]
+
+    monkeypatch.setattr(download_flow, "_fetch_google_books_search", google_must_not_run)
+    monkeypatch.setattr(download_flow, "_search_aa_metadata", fake_aa_search)
+
+    try:
+        assert await download_flow.search_books("fallback book") == [
+            {"title": "Fallback book", "md5": "0123456789abcdef0123456789abcdef"}
+        ]
+    finally:
+        download_flow._GOOGLE_BREAKER.update(consecutive_failures=0, open_until=0.0)
+
+
+def test_google_results_drop_unrelated_isbn_matches():
+    volumes = [
+        {
+            "volumeInfo": {
+                "title": "The Sand Chronicles",
+                "authors": ["Someone Else"],
+                "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780441172719"}],
+            }
+        },
+        {
+            "volumeInfo": {
+                "title": "Dune",
+                "authors": ["Frank Herbert"],
+                "industryIdentifiers": [{"type": "ISBN_13", "identifier": "9780441013593"}],
+            }
+        },
+    ]
+
+    results = download_flow._parse_google_books_results(volumes, "Dune Frank Herbert")
+
+    assert [result["title"] for result in results] == ["Dune"]
+
+
 @pytest.mark.asyncio
 async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
     statuses = []
     sent_paths = []
 
-    async def fake_download(_md5: str) -> Path:
+    async def fake_download(_md5: str, on_status=None) -> Path:
         return Path("/tmp/hebrew-book.epub")
 
     def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
@@ -488,10 +1140,10 @@ async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
 async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
     sent_paths = []
 
-    async def fake_aa_download(_md5: str) -> Path:
+    async def fake_aa_download(_md5: str, on_status=None) -> Path:
         raise DownloadError("Anna CDN unavailable")
 
-    async def fake_libgen_download(isbn: str, md5_list: list[str]) -> Path:
+    async def fake_libgen_download(isbn: str, md5_list: list[str], **kwargs) -> Path:
         assert isbn == "0123456789abcdef0123456789abcdef"
         assert md5_list == ["0123456789abcdef0123456789abcdef"]
         return Path("/tmp/libgen-book.epub")
