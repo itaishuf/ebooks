@@ -1,7 +1,6 @@
 ---
-description: Alpine.js reactivity patterns and job status values for static/index.html
-globs: static/index.html
-alwaysApply: false
+name: alpine-js-job-status
+description: Alpine.js reactivity patterns and job status values for static/index.html. Use when editing the Alpine.js frontend, changing job status UI, or keeping backend/frontend status keys in sync.
 ---
 
 # Alpine.js Patterns

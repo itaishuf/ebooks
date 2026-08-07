@@ -1,7 +1,6 @@
 ---
-description: Docker Compose and Tailscale Funnel patterns for the container deployment path
-globs: Dockerfile,docker-compose.yml,readme.md,tailscale/**/*.sh,.dockerignore
-alwaysApply: false
+name: docker-tailscale-funnel
+description: Docker Compose and Tailscale Funnel patterns for the container deployment path. Use when editing Dockerfile, docker-compose.yml, tailscale/**/*.sh, .dockerignore, or deployment docs in readme.md.
 ---
 
 # Docker + Tailscale Funnel

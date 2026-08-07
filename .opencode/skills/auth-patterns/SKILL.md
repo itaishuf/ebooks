@@ -1,7 +1,6 @@
 ---
-description: Auth architecture and ownership patterns for backend auth files, frontend auth session code, and auth tests
-globs: auth.py,config.py,service.py,static/index.html,tests/test_auth.py,tests/test_service_auth.py
-alwaysApply: false
+name: auth-patterns
+description: Auth architecture and ownership patterns for backend auth files, frontend auth session code, and auth tests. Use when editing auth.py, config.py, service.py auth routes, static/index.html auth UI, or auth tests.
 ---
 
 # Auth Patterns

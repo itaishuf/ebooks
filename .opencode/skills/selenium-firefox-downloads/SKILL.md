@@ -1,7 +1,6 @@
 ---
-description: Selenium and Firefox download configuration patterns for download_with_libgen.py and tests
-globs: download_with_libgen.py,tests/**/*.py
-alwaysApply: false
+name: selenium-firefox-downloads
+description: Selenium and Firefox download configuration patterns for download_with_libgen.py and tests. Use when editing Selenium/Firefox code, download_with_libgen.py, or tests that download files.
 ---
 
 # Selenium / Firefox Download Patterns

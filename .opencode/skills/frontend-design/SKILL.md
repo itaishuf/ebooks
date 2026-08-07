@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: Create distinctive, production-grade frontend interfaces with high design quality, and adapt them to this repo's static Alpine.js + Supabase session architecture. Use when building or refining `static/index.html`, improving UI polish, or implementing frontend auth/session flows.
+description: Create distinctive, production-grade frontend interfaces with high design quality, and adapt them to this repo's static Alpine.js + Google OAuth session architecture. Use when building or refining `static/index.html`, improving UI polish, or implementing frontend auth/session flows.
 license: Complete terms in LICENSE.txt
 ---
 
@@ -8,7 +8,7 @@ license: Complete terms in LICENSE.txt
 
 Use this skill for frontend work in this repo, especially changes to `static/index.html`.
 
-The goal is not just to make the UI prettier. It should stay production-grade, cohesive, and compatible with the existing Alpine.js app, Supabase magic-link auth flow, and protected backend routes.
+The goal is not just to make the UI prettier. It should stay production-grade, cohesive, and compatible with the existing Alpine.js app, Google OAuth sign-in flow, and protected backend routes.
 
 ## Core design stance
 
@@ -39,26 +39,27 @@ This app is a single static HTML page with Alpine.js and CDN-loaded dependencies
 
 ## Auth and session model
 
-The current frontend flow is Supabase session-based.
+The current frontend flow is Google OAuth session-based.
 
-- The page fetches `/auth/config` to get `supabase_url` and `supabase_publishable_key`
-- Supabase magic-link auth is the sign-in mechanism
-- Protected requests send `Authorization: Bearer <token>`
+- On load the page fetches `/auth/session` with `credentials: 'same-origin'` to check the signed session cookie
+- Unauthenticated users are redirected to `/auth/google/login` (server-owned OAuth; the callback stores a signed session cookie)
+- Signing out posts to `/auth/logout` to clear the session
+- Authenticated fetches rely on the session cookie (`credentials: 'same-origin'`), not an Authorization header or query-param API keys
 - Signed-out, signed-in, loading, and auth-error states are first-class UI states
 
 When editing auth UI:
 
 - keep the auth card and signed-in user state easy to understand
-- preserve clear feedback for sending magic links, signing in, signing out, and expired sessions
+- preserve clear feedback for signing in, signing out, and expired sessions
 - do not reintroduce shared API-key UX
 
 ## Backend contract to preserve
 
 The frontend should stay aligned with the backend route contract.
 
-- Public routes: `/`, `/health`, `/auth/config`
+- Public routes: `/`, `/health`, `/auth/session`, `/auth/google/login`, `/auth/google/callback`
 - Protected read routes: `GET /search`, `GET /jobs/{job_id}`
-- Protected write routes: `POST /download`, `POST /download/md5`
+- Protected write routes: `POST /download`, `POST /download/isbn`, `POST /download/md5`
 
 If the UI changes these flows, make sure the request method, payload shape, and auth headers still match the backend.
 
@@ -93,7 +94,7 @@ This product works best when it feels warm, calm, and book-oriented rather than 
 When making frontend changes:
 
 1. Read the relevant `static/index.html` sections first instead of redesigning blindly.
-2. Preserve Supabase auth bootstrapping, authenticated fetches, and protected route usage.
+2. Preserve Google OAuth session bootstrapping (`/auth/session` check, `/auth/google/login` redirect) and protected route usage.
 3. Keep Alpine state transitions coherent for signed-out, booting, loading, results, and active jobs.
 4. Maintain accessibility basics: contrast, focus states, disabled states, readable copy.
 5. If you touch status flows, keep the backend/frontend status keys synchronized.
