@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit, urlencode as _urlencode
 
 from fastapi import HTTPException, Request, status
 
@@ -187,6 +187,13 @@ def _replace_emails(text: str) -> str:
     return re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", EMAIL_REPLACEMENT, text, flags=re.IGNORECASE)
 
 
+_SENSITIVE_QUERY_PARAMS = frozenset({
+    "access_token", "apikey", "api_key", "auth", "authorization",
+    "key", "passwd", "password", "secret", "session", "sessionid",
+    "sid", "sign", "signature", "token",
+})
+
+
 def _replace_urls(text: str) -> str:
     import re
 
@@ -195,9 +202,20 @@ def _replace_urls(text: str) -> str:
         parsed = urlsplit(url)
         if parsed.hostname in {"goodreads.com", "www.goodreads.com"} and not parsed.query and not parsed.fragment:
             return url
-        return URL_REPLACEMENT
+
+        clean_query = _strip_sensitive_params(parsed.query)
+        clean = parsed._replace(query=clean_query, fragment="")
+        return clean.geturl()
 
     return re.sub(r"https?://[^\s\"'>]+", replace_url, text, flags=re.IGNORECASE)
+
+
+def _strip_sensitive_params(query_string: str) -> str:
+    if not query_string:
+        return ""
+    pairs = parse_qs(query_string, keep_blank_values=True)
+    safe = {key: values for key, values in pairs.items() if key.lower() not in _SENSITIVE_QUERY_PARAMS}
+    return _urlencode(safe, doseq=True)
 
 
 def _replace_bearer_tokens(text: str) -> str:

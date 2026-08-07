@@ -1625,8 +1625,8 @@
                         </template>
                       </span>
                       <span class="step-copy" x-text="s.label"></span>
-                      <template x-if="isStepActive(job.status, s.key) && s.activeNote">
-                        <span class="step-note" x-text="s.activeNote"></span>
+                      <template x-if="s.key === 'downloading' && isStepActive(job.status, s.key) && job.currentSource">
+                        <span class="step-note" x-text="downloadSourceNote(job.currentSource)"></span>
                       </template>
                     </div>
                   </template>
@@ -1761,28 +1761,41 @@
           { key: 'fetching_isbn', label: 'Fetching ISBN' },
           { key: 'searching', label: 'Searching for book' },
           { key: 'downloading', label: 'Downloading' },
-          { key: 'trying_alternative', label: "Anna's Archive", activeNote: "LibGen unavailable, trying a slower source\u2026" },
           { key: 'sending', label: 'Sending to Kindle' },
           { key: 'done', label: 'Done' },
         ],
 
+        effectiveStatus(status) {
+          return status === 'trying_alternative' ? 'downloading' : status;
+        },
+
         stepIndex(key) {
-          const idx = this.steps.findIndex(s => s.key === key);
+          const effectiveKey = this.effectiveStatus(key);
+          const idx = this.steps.findIndex(s => s.key === effectiveKey);
           return idx === -1 ? -1 : idx;
         },
 
         isStepDone(jobStatus, stepKey) {
-          return this.stepIndex(jobStatus) > this.stepIndex(stepKey) || (jobStatus === 'done' && stepKey === 'done');
+          const effectiveStatus = this.effectiveStatus(jobStatus);
+          return this.stepIndex(effectiveStatus) > this.stepIndex(stepKey) || (jobStatus === 'done' && stepKey === 'done');
         },
 
         isStepActive(jobStatus, stepKey) {
-          return jobStatus === stepKey && jobStatus !== 'done' && jobStatus !== 'error';
+          const effectiveStatus = this.effectiveStatus(jobStatus);
+          return effectiveStatus === stepKey && jobStatus !== 'done' && jobStatus !== 'error';
         },
 
         statusLabel(key) {
           if (key === 'error') return 'Needs attention';
-          const step = this.steps.find(s => s.key === key);
+          const effectiveKey = this.effectiveStatus(key);
+          const step = this.steps.find(s => s.key === effectiveKey);
           return step ? step.label : 'Working';
+        },
+
+        downloadSourceNote(source) {
+          if (source === 'libgen') return 'from LibGen';
+          if (source === 'annas_archive') return "from Anna's Archive";
+          return source ? 'from ' + source : '';
         },
 
         async init() {

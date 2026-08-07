@@ -14,52 +14,54 @@ from abuse_protection import (
 )
 
 
-def test_sanitize_for_log_redacts_emails_urls_and_secrets():
+def test_sanitize_for_log_redacts_emails_url_params_and_secrets():
     message = (
-        "reader@example.com requested https://goodreads.example/book "
+        "reader@example.com loaded https://downloads.example/book?token=abc&page=1 "
         'with Authorization: Bearer eyJabc.def.ghi and password="super-secret"'
     )
 
     sanitized = sanitize_for_log(message)
 
     assert "reader@example.com" not in sanitized
-    assert "https://goodreads.example/book" not in sanitized
+    assert "token=abc" not in sanitized
+    assert "https://downloads.example/book?page=1" in sanitized
     assert "super-secret" not in sanitized
     assert "eyJabc.def.ghi" not in sanitized
     assert "[redacted-email]" in sanitized
-    assert "[redacted-url]" in sanitized
     assert "[redacted-secret]" in sanitized
 
 
 def test_sanitize_for_log_can_allow_emails_for_intentional_logs():
     message = (
-        "reader@example.com requested https://goodreads.example/book "
+        "reader@example.com loaded https://downloads.example/book?token=abc&page=1 "
         'with Authorization: Bearer eyJabc.def.ghi and password="super-secret"'
     )
 
     sanitized = sanitize_for_log(message, allow_emails=True)
 
     assert "reader@example.com" in sanitized
-    assert "https://goodreads.example/book" not in sanitized
+    assert "token=abc" not in sanitized
+    assert "https://downloads.example/book?page=1" in sanitized
     assert "super-secret" not in sanitized
     assert "eyJabc.def.ghi" not in sanitized
-    assert "[redacted-url]" in sanitized
     assert "[redacted-secret]" in sanitized
 
 
-def test_sanitize_for_log_preserves_public_goodreads_paths_only():
+def test_url_stripping_strips_sensitive_params_keeps_safe_ones():
     message = (
         "book https://www.goodreads.com/book/show/42046112-recursion "
-        "search https://www.goodreads.com/search?q=private-query "
-        "download https://downloads.example/file?token=secret"
+        "search https://www.goodreads.com/search?q=private-query&token=abc&page=2 "
+        "download https://downloads.example/file?token=secret&format=epub"
     )
 
     sanitized = sanitize_for_log(message)
 
     assert "https://www.goodreads.com/book/show/42046112-recursion" in sanitized
-    assert "https://www.goodreads.com/search?q=private-query" not in sanitized
-    assert "https://downloads.example/file?token=secret" not in sanitized
-    assert sanitized.count("[redacted-url]") == 2
+    assert "https://www.goodreads.com/search?q=private-query&page=2" in sanitized
+    assert "token=abc" not in sanitized
+    assert "https://downloads.example/file?format=epub" in sanitized
+    assert "token=secret" not in sanitized
+    assert "[redacted-url]" not in sanitized
 
 
 def test_cleanup_expired_jobs_removes_only_old_terminal_jobs():

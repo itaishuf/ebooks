@@ -1,0 +1,85 @@
+{
+  "kind": "books#volume",
+  "id": "Udwc0QEACAAJ",
+  "etag": "//610sYz3o4",
+  "selfLink": "https://content-books.googleapis.com/books/v1/volumes/Udwc0QEACAAJ",
+  "volumeInfo": {
+    "title": "Heart the Lover",
+    "subtitle": "A Novel",
+    "authors": [
+      "Lily King"
+    ],
+    "publisher": "Grove Atlantic",
+    "publishedDate": "2025",
+    "description": "\u003cp\u003e\u003cb\u003eINSTANT \u003ci\u003eNEW YORK TIMES\u003c/i\u003e BESTSELLER\u003c/b\u003e\u003c/p\u003e \u003cp\u003e\u003cb\u003eFINALIST FOR THE PEN/FAULKNER AWARD AND THE WOMEN'S PRIZE FOR FICTION\u003c/b\u003e\u003c/p\u003e \u003cp\u003e\u003cb\u003eA BEST BOOK OF THE YEAR: \u003ci\u003eTIME Magazine, New York Times, Washington Post, Boston Globe, Harper's Baazar,\u003c/i\u003e NPR, \u003ci\u003eVogue, Oprah Daily, People Magazine, USA TODAY\u003c/i\u003e, \u003ci\u003eLiterary Hub, Electric Literature, Kirkus Review, BookPage,\u003c/i\u003e Apple, Spotify, Amazon, Barnes & Nobles, PEN America, Chicago Public Library\u003c/b\u003e\u003c/p\u003e \u003cp\u003e\u003cb\u003e\"Lily King has written another masterpiece. This book overflows with her brilliance and her heart. We are so lucky.\" --Emma Straub, \u003ci\u003eNew York Times\u003c/i\u003e bestselling author of \u003ci\u003eThis Time Tomorrow\u003c/i\u003e\u003c/b\u003e\u003c/p\u003e \u003cp\u003e\u003cb\u003eFrom the \u003ci\u003eNew York Times\u003c/i\u003e bestselling author of \u003ci\u003eWriters & Lovers\u003c/i\u003e comes a magnificent and intimate new novel of desire, friendship, and the lasting impact of first love\u003c/b\u003e\u003c/p\u003e \u003cp\u003e\u003ci\u003eYou knew I'd write a book about you someday.\u003c/i\u003e\u003c/p\u003e \u003cp\u003eOur narrator understands good love stories--their secrets and subtext, their highs and free falls. But her greatest love story, the one she lived, never followed the simple rules.\u003c/p\u003e \u003cp\u003eIn the fall of her senior year of college, she meets two star students from her 17th-Century Lit class: Sam and Yash. Best friends living off campus in the elegant house of a professor on sabbatical, the boys invite her into their intoxicating world of academic fervor, rapid-fire banter and raucous card games. They nickname her Jordan, and she quickly discovers the pleasures of friendship, love and her own intellectual ambition. But youthful passion is unpredictable, and soon she finds herself at the center of a charged and intricate triangle. As graduation comes and goes, choices made will alter these three lives forever.\u003c/p\u003e \u003cp\u003eDecades later, the vulnerable days of Jordan's youth seem comfortably behind her. But when a surprise visit and unexpected news bring the past crashing into the present, she returns to a world she left behind and must confront the decisions and deceptions of her younger self.\u003c/p\u003e \u003cp\u003eWritten with the superb wit and emotional sensitivity fans and critics of Lily King have come to adore, \u003ci\u003eHeart the Lover\u003c/i\u003e is a deeply moving love story that celebrates literature, forgiveness, and the transformative bonds that shape our lives. Wise, unforgettable, and with a delightful connective thread to \u003ci\u003eWriters & Lovers\u003c/i\u003e, this is King at her very best, affirming her as a masterful chronicler of the human experience and one of the finest novelists at work today.\u003c/p\u003e",
+    "industryIdentifiers": [
+      {
+        "type": "ISBN_10",
+        "identifier": "0802165176"
+      },
+      {
+        "type": "ISBN_13",
+        "identifier": "9780802165176"
+      }
+    ],
+    "readingModes": {
+      "text": false,
+      "image": false
+    },
+    "pageCount": 249,
+    "printedPageCount": 249,
+    "dimensions": {
+      "height": "22.00 cm",
+      "width": "14.00 cm",
+      "thickness": "2.60 cm"
+    },
+    "printType": "BOOK",
+    "categories": [
+      "FIC019000",
+      "Fiction / Literary",
+      "FIC043000",
+      "Fiction / Coming of Age",
+      "FIC044000",
+      "Fiction / Women",
+      "FIC045000",
+      "Fiction / Family Life / General"
+    ],
+    "maturityRating": "NOT_MATURE",
+    "allowAnonLogging": false,
+    "contentVersion": "preview-1.0.0",
+    "panelizationSummary": {
+      "containsEpubBubbles": false,
+      "containsImageBubbles": false
+    },
+    "imageLinks": {
+      "smallThumbnail": "http://books.google.com/books/content?id=Udwc0QEACAAJ&printsec=frontcover&img=1&zoom=5&imgtk=AFLRE72OuVkoHoUKjIHpIazYAn0SdGN4cVcdfBjfm1dPhoOKZZsa5v-odBGBDaeKyFRofMIbNkF7PON42U_MYzRGp9RfWrgx2hM8Xr_pc9uOalm-zuZ53ZM&source=gbs_api",
+      "thumbnail": "http://books.google.com/books/content?id=Udwc0QEACAAJ&printsec=frontcover&img=1&zoom=1&imgtk=AFLRE70TqOOA-DGWx9bOzcgz4-d2ZhCyC1tKu15Zm5nam8VimMMKQrBHmCktcWgvsOcO0Y2-jlfRXUcEx1CZwiUb9AST4dLe7SmPqs1x7tcRXk_qX86aG0A&source=gbs_api"
+    },
+    "language": "en",
+    "previewLink": "http://books.google.com/books?id=Udwc0QEACAAJ&hl=&source=gbs_api",
+    "infoLink": "https://play.google.com/store/books/details?id=Udwc0QEACAAJ&source=gbs_api",
+    "canonicalVolumeLink": "https://play.google.com/store/books/details?id=Udwc0QEACAAJ"
+  },
+  "saleInfo": {
+    "country": "IL",
+    "saleability": "NOT_FOR_SALE",
+    "isEbook": false
+  },
+  "accessInfo": {
+    "country": "IL",
+    "viewability": "NO_PAGES",
+    "embeddable": false,
+    "publicDomain": false,
+    "textToSpeechPermission": "ALLOWED",
+    "epub": {
+      "isAvailable": false
+    },
+    "pdf": {
+      "isAvailable": false
+    },
+    "webReaderLink": "http://play.google.com/books/reader?id=Udwc0QEACAAJ&hl=&source=gbs_api",
+    "accessViewStatus": "NONE",
+    "quoteSharingAllowed": false
+  }
+}
+

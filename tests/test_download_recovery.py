@@ -281,7 +281,7 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
     async def fake_get_book_info(_url):
         return {"isbn": "isbn-123", "title": "Test Book", "author": "Test Author"}
 
-    async def fake_search_aa_all_formats(_isbn, title=""):
+    async def fake_search_aa_all_formats(_isbn, title="", author=""):
         return {"epub": ["epub-md5"], "pdf": ["pdf-md5"], "mobi": []}
 
     async def fake_download_via_libgen(_isbn, _md5_list, **kwargs):
@@ -552,17 +552,28 @@ def test_partner_health_evicts_entries_to_stay_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch):
-    """MD5 page with a different ISBN raises DownloadError without fetching further."""
+async def test_download_book_from_annas_archive_skips_wrong_isbn(monkeypatch, tmp_path):
+    """MD5 page with a different ISBN proceeds past the check (different edition is ok)."""
     async def fake_fetch(_md5):
         return _HTML_WITH_WRONG_ISBN
 
     monkeypatch.setattr(download_with_annas_archive, "_fetch_md5_page", fake_fetch)
 
-    with pytest.raises(DownloadError, match="ISBN mismatch"):
-        await download_with_annas_archive.download_book_from_annas_archive(
-            "deadbeef", isbns={_ISBN13}
-        )
+    reached_ia = False
+
+    async def fake_try_ia(_md5, _html):
+        nonlocal reached_ia
+        reached_ia = True
+        out = tmp_path / "book.epub"
+        out.write_bytes(b"epub-data")
+        return out
+
+    monkeypatch.setattr(download_with_annas_archive, "_try_internet_archive", fake_try_ia)
+
+    await download_with_annas_archive.download_book_from_annas_archive(
+        "deadbeef", isbns={_ISBN13}
+    )
+    assert reached_ia, "Should have proceeded past ISBN check to Internet Archive"
 
 
 @pytest.mark.asyncio
@@ -610,6 +621,7 @@ async def test_search_books_uses_google_books_metadata(monkeypatch, caplog):
             "title": "Example Book",
             "author": "Example Author",
             "isbn": "9780123456472",
+            "isbns": ["9780123456472"],
             "cover_url": "https://images.example/book.jpg",
             "md5": "",
             "format": "",

@@ -44,6 +44,7 @@ _GOOGLE_COVER_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 # entries for less-recently-seen queries are dropped first.
 _GOOGLE_CACHE_MAX_ENTRIES = 64
 _GOOGLE_BREAKER = {"consecutive_failures": 0, "open_until": 0.0}
+_STRUCTURED_GOOGLE_QUERIES = ("isbn:", "intitle:", "inauthor:")
 
 
 class GoogleBooksProviderError(RuntimeError):
@@ -332,7 +333,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
 
 
 @log_call
-async def search_aa_all_formats(isbn: str, title: str = "") -> dict[str, list[str]]:
+async def search_aa_all_formats(isbn: str, title: str = "", author: str = "") -> dict[str, list[str]]:
     """Search Anna's Archive for all formats of a book.
 
     Searches by *title* (broad, finds all formats) rather than ISBN, because
@@ -344,7 +345,7 @@ async def search_aa_all_formats(isbn: str, title: str = "") -> dict[str, list[st
 
     Returns ``{"epub": [md5, ...], "pdf": [...], "mobi": [...]}``.
     """
-    query = title if title else isbn
+    query = f"{title} {author}".strip() if title else isbn
     params = urlencode({"q": query})
     search_url = f"{settings.annas_archive_url}/search?{params}"
 
@@ -565,8 +566,7 @@ def _google_cover_url(image_links: object) -> str:
 
 
 def _parse_google_books_results(volumes: list[dict], query: str = "") -> list[dict]:
-    results = []
-    seen_isbns = set()
+    results: dict[tuple[str, str], dict] = {}
     skipped_missing_title = 0
     skipped_missing_isbn = 0
     skipped_duplicate_isbn = 0
@@ -583,54 +583,61 @@ def _parse_google_books_results(volumes: list[dict], query: str = "") -> list[di
         language = volume_info.get("language")
         if language:
             language_codes.add(str(language))
-        identifiers = volume_info.get("industryIdentifiers", [])
-        isbn = next(
-            (
-                normalized
-                for identifier in identifiers
-                if isinstance(identifier, dict)
-                and identifier.get("type") in {"ISBN_13", "ISBN_10"}
-                and (normalized := _normalize_isbn(identifier.get("identifier", ""))) not in seen_isbns
-                and normalized
-            ),
-            "",
-        )
         title = str(volume_info.get("title", "")).strip()
         if not title:
             skipped_missing_title += 1
             continue
-        if not isbn:
-            skipped_missing_isbn += 1
-            continue
-        if isbn in seen_isbns:
-            skipped_duplicate_isbn += 1
-            continue
-        seen_isbns.add(isbn)
         authors = volume_info.get("authors", [])
         author = ", ".join(str(name) for name in authors if name) if isinstance(authors, list) else ""
-        if query and not _google_result_is_relevant(query, title, author):
+        if query and not query.casefold().startswith(_STRUCTURED_GOOGLE_QUERIES) and not _google_result_is_relevant(query, title, author):
             skipped_irrelevant += 1
             continue
-        cover_url = _google_cover_url(volume_info.get("imageLinks"))
-        results.append(
-            {
+        identifiers = volume_info.get("industryIdentifiers", [])
+        isbns = [
+            normalized
+            for identifier in identifiers
+            if isinstance(identifier, dict)
+            and identifier.get("type") in {"ISBN_13", "ISBN_10"}
+            and (normalized := _normalize_isbn(identifier.get("identifier", "")))
+        ]
+        if not isbns:
+            skipped_missing_isbn += 1
+            continue
+        key = (_normalize_query(title), _normalize_query(author) if author else "")
+        if key in results:
+            existing = results[key]
+            for isbn in isbns:
+                if isbn not in existing["isbns"]:
+                    existing["isbns"].append(isbn)
+                    existing["isbn"] = existing["isbns"][0]
+            if not existing.get("cover_url") and not existing.get("language"):
+                cover_url = _google_cover_url(volume_info.get("imageLinks"))
+                if cover_url:
+                    existing["cover_url"] = cover_url
+                if language:
+                    existing["language"] = str(language)
+                if author:
+                    existing["author"] = author
+        else:
+            cover_url = _google_cover_url(volume_info.get("imageLinks"))
+            results[key] = {
                 "title": title,
                 "author": author,
-                "isbn": isbn,
+                "isbn": isbns[0],
+                "isbns": isbns,
                 "cover_url": cover_url,
                 "md5": "",
                 "format": "",
                 "language": str(language or ""),
                 "source": "google_books",
             }
-        )
     logger.info(
         f"Google Books ISBN decisions volumes={len(volumes)} selected={len(results)} "
         f"skipped_missing_title={skipped_missing_title} skipped_missing_isbn={skipped_missing_isbn} "
         f"skipped_duplicate_isbn={skipped_duplicate_isbn} skipped_irrelevant={skipped_irrelevant} "
         f"language_codes={sorted(language_codes)}"
     )
-    return results
+    return list(results.values())
 
 
 async def _google_metadata_results(query: str) -> list[dict]:
@@ -688,6 +695,30 @@ def _google_cached_volumes(query: str) -> list[dict]:
         _GOOGLE_CACHE.pop(_normalize_query(query), None)
         return []
     return cached[2]
+
+
+async def _enrich_google_cache_for_book(isbn: str, title: str, author: str) -> None:
+    """Populate the Google Books cache with all known editions of a book.
+
+    Fires targeted API calls that surface different editions than the bare
+    keyword search used during initial book discovery.
+    """
+    if not settings.google_books_api_key:
+        return
+    queries: list[str] = []
+    if isbn:
+        queries.append(f"isbn:{isbn}")
+    if title and author:
+        queries.append(f'intitle:"{title}" inauthor:"{author}"')
+    elif title:
+        queries.append(f'intitle:"{title}"')
+    elif author:
+        queries.append(f'inauthor:"{author}"')
+    for query in queries:
+        try:
+            await _google_metadata_results(query)
+        except GoogleBooksProviderError:
+            pass
 
 
 def _google_edition_isbns(title: str, author: str = "", *, language: str = "") -> set[str]:
@@ -1115,14 +1146,15 @@ async def ebook_download_from_metadata(
     def _emit(status, **details):
         _emit_status(on_status, status, **details)
 
-    edition_isbns = _google_edition_isbns(title, author, language=language) if language else set()
+    await _enrich_google_cache_for_book(isbn, title, author)
+    edition_isbns = _google_edition_isbns(title, author, language=language)
     isbns = {isbn} | edition_isbns
     if len(isbns) > 1:
         logger.info(f"Download decision edition_isbns primary={isbn} total={len(isbns)}")
     logger.info(f"Download decision source=metadata isbn={isbn} title={title!r} next=archive_search")
     _emit("searching")
     _emit("searching", source="annas_archive")
-    all_hashes = await search_aa_all_formats(isbn, title=title)
+    all_hashes = await search_aa_all_formats(isbn, title=title, author=author)
     epub_hashes = all_hashes.get("epub", [])
     pdf_hashes = all_hashes.get("pdf", [])
     mobi_hashes = all_hashes.get("mobi", [])

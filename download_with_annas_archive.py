@@ -2,7 +2,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import unquote, urlencode, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -44,19 +44,21 @@ class AnnaPartnerError(DownloadError):
         self.outcome_code = outcome_code
 
 
+_CORRUPT_ISBN = frozenset({"4294967295"})
+
 def _page_isbns(html: str) -> list[str]:
-    """Return all ISBN-10 / ISBN-13 strings found in an AA MD5 page."""
-    return _ISBN_RE.findall(html)
+    """Return all valid ISBN-10 / ISBN-13 strings found in an AA MD5 page."""
+    return [isbn for isbn in _ISBN_RE.findall(html) if isbn not in _CORRUPT_ISBN]
 
 
 def _extract_filename(content_disposition: str, url: str, md5: str) -> str:
     """Derive a filename from Content-Disposition, the URL, or the MD5 hash."""
     if "filename=" in content_disposition:
-        part = content_disposition.split("filename=")[-1].strip().strip('"').strip("'")
-        if part:
-            return part
+        raw = content_disposition.split("filename=")[-1].strip().strip('"').strip("'")
+        if raw:
+            return unquote(raw)
     url_path = url.split("?")[0].rstrip("/").split("/")[-1]
-    return url_path if "." in url_path else f"{md5}.epub"
+    return unquote(url_path) if "." in url_path else f"{md5}.epub"
 
 
 async def _fetch_md5_page(md5: str) -> str:
@@ -312,11 +314,12 @@ async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = No
             any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
         ):
             logger.warning(
-                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, skipping"
+                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, continuing anyway (different edition)"
             )
-            raise DownloadError(f"ISBN mismatch on AA MD5 page for {md5}")
         logger.info(
-            f"Anna MD5 decision isbn_validation={'matched' if page_isbns else 'unavailable'} md5={md5}"
+            f"Anna MD5 decision isbn_validation={'matched' if page_isbns and any(
+                any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
+            ) else 'unavailable' if not page_isbns else 'different_edition'} md5={md5}"
         )
 
     try:

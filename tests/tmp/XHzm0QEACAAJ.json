@@ -1,0 +1,66 @@
+{
+    "kind": "books#volume",
+    "id": "XHzm0QEACAAJ",
+    "etag": "O05dAdIWag0",
+    "selfLink": "https://content-books.googleapis.com/books/v1/volumes/XHzm0QEACAAJ",
+    "volumeInfo":
+    {
+        "title": "HEART THE LOVER.",
+        "publisher": "GROVE",
+        "publishedDate": "2026",
+        "industryIdentifiers":
+        [
+            {
+                "type": "ISBN_10",
+                "identifier": "0802168450"
+            },
+            {
+                "type": "ISBN_13",
+                "identifier": "9780802168450"
+            }
+        ],
+        "readingModes":
+        {
+            "text": false,
+            "image": false
+        },
+        "printType": "BOOK",
+        "maturityRating": "NOT_MATURE",
+        "allowAnonLogging": false,
+        "contentVersion": "preview-1.0.0",
+        "panelizationSummary":
+        {
+            "containsEpubBubbles": false,
+            "containsImageBubbles": false
+        },
+        "language": "en",
+        "previewLink": "http://books.google.com/books?id=XHzm0QEACAAJ&hl=&source=gbs_api",
+        "infoLink": "https://play.google.com/store/books/details?id=XHzm0QEACAAJ&source=gbs_api",
+        "canonicalVolumeLink": "https://play.google.com/store/books/details?id=XHzm0QEACAAJ"
+    },
+    "saleInfo":
+    {
+        "country": "IL",
+        "saleability": "NOT_FOR_SALE",
+        "isEbook": false
+    },
+    "accessInfo":
+    {
+        "country": "IL",
+        "viewability": "NO_PAGES",
+        "embeddable": false,
+        "publicDomain": false,
+        "textToSpeechPermission": "ALLOWED",
+        "epub":
+        {
+            "isAvailable": false
+        },
+        "pdf":
+        {
+            "isAvailable": false
+        },
+        "webReaderLink": "http://play.google.com/books/reader?id=XHzm0QEACAAJ&hl=&source=gbs_api",
+        "accessViewStatus": "NONE",
+        "quoteSharingAllowed": false
+    }
+}

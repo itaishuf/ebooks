@@ -16,12 +16,10 @@ def _fail_e2e_prerequisites(messages: list[str]) -> None:
 
 @pytest.fixture(scope="session")
 def e2e_runtime_bootstrap():
-    missing = []
-    if not settings.test_goodreads_url:
-        missing.append("`test_goodreads_url` is not configured")
-    if missing:
-        _fail_e2e_prerequisites(missing)
-
+    try:
+        fetch_secrets(settings)
+    except BitwardenError:
+        pass
     bootstrap = asyncio.run(bootstrap_annas_archive_url())
     if bootstrap.used_fallback:
         _fail_e2e_prerequisites(
@@ -42,6 +40,8 @@ def _bootstrap_marked_e2e_tests(request):
 @pytest.fixture
 def delivery_prerequisites(e2e_runtime_bootstrap):
     missing = []
+    if not settings.test_goodreads_url:
+        missing.append("`test_goodreads_url` is not configured")
     if not settings.gmail_password:
         try:
             fetch_secrets(settings)
