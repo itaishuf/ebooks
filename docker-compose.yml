@@ -4,6 +4,11 @@ networks:
   # Shared internal network so ebookarr (which runs in tailscale's network
   # namespace via network_mode: service:tailscale) can reach flaresolverr.
   internal:
+  # Shared bridge with projects/trawl (FlareSolverr replacement) so ebookarr
+  # can also reach trawl:8191 (Anna's Archive path).
+  trawl:
+    external: true
+    name: trawl
 
 services:
   tailscale:
@@ -23,6 +28,7 @@ services:
     networks:
       - default
       - internal
+      - trawl
     restart: unless-stopped
 
   flaresolverr:
@@ -33,14 +39,6 @@ services:
     networks:
       - internal
 
-  download-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.download-proxy
-    restart: unless-stopped
-    networks:
-      - internal
-
   ebookarr:
     build:
       context: .
@@ -48,8 +46,6 @@ services:
       tailscale:
         condition: service_started
       flaresolverr:
-        condition: service_started
-      download-proxy:
         condition: service_started
     env_file:
       - .env

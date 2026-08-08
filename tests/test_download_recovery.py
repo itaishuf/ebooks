@@ -380,7 +380,6 @@ def test_slow_partner_selection_prefers_recent_success_and_skips_cooldown(monkey
         "failures": 2,
         "cooldown_until": 200.0,
     }
-    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 3)
 
     selected = download_with_annas_archive._rank_slow_partner_urls(urls, now=100.0)
 
@@ -397,65 +396,28 @@ async def test_slow_partner_attempts_are_bounded_and_classified(monkeypatch, tmp
     attempts = []
     download_with_annas_archive._PARTNER_HEALTH.clear()
     monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
-    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 2)
 
-    async def fake_solve(_md5, slow_url):
+    async def fake_trawl(_md5, slow_url):
         attempts.append(slow_url)
-        raise download_with_annas_archive.AnnaPartnerError("no_rendered_link")
+        raise download_with_annas_archive.AnnaPartnerError("trawl_aa_ddg_not_cleared")
 
-    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
+    monkeypatch.setattr(download_with_annas_archive, "_download_via_trawl_browser", fake_trawl)
 
-    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="no_rendered_link"):
+    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="trawl_aa_ddg_not_cleared"):
         await download_with_annas_archive._download_via_slow_partners("deadbeef", urls)
 
-    assert attempts == urls[:2]
-
-
-class _FakeProxyResponse:
-    def __init__(self, content: bytes, headers: dict):
-        self.status = 200
-        self.headers = headers
-        self._content = content
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return False
-
-    async def read(self) -> bytes:
-        return self._content
-
-
-class _FakeProxySession:
-    def __init__(self, response):
-        self._response = response
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return False
-
-    def get(self, *_args, **_kwargs):
-        return self._response
+    assert attempts == urls
 
 
 @pytest.mark.asyncio
-async def test_slow_partner_sanitizes_content_disposition_filename(monkeypatch, tmp_path):
+async def test_slow_partner_sanitizes_download_filename(monkeypatch, tmp_path):
     download_with_annas_archive._PARTNER_HEALTH.clear()
     monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
 
-    async def fake_solve(_md5, slow_url):
-        return {}, "user-agent", "https://download.example/book.epub?signature=secret"
+    async def fake_trawl(_md5, slow_url):
+        return b"book-data", "../../evil.epub"
 
-    response = _FakeProxyResponse(b"book-data", {"Content-Disposition": 'attachment; filename="../../evil.epub"'})
-    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
-    monkeypatch.setattr(
-        download_with_annas_archive.aiohttp,
-        "ClientSession",
-        lambda *_args, **_kwargs: _FakeProxySession(response),
-    )
+    monkeypatch.setattr(download_with_annas_archive, "_download_via_trawl_browser", fake_trawl)
 
     path = await download_with_annas_archive._download_via_slow_partners(
         "deadbeef", ["https://annas.example/slow_download/one"]
@@ -467,52 +429,59 @@ async def test_slow_partner_sanitizes_content_disposition_filename(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_slow_partner_rejects_oversized_response(monkeypatch, tmp_path):
+async def test_trawl_browser_rejects_oversized_response(monkeypatch, tmp_path):
     download_with_annas_archive._PARTNER_HEALTH.clear()
-    monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
+    monkeypatch.setattr(download_with_annas_archive.settings, "trawl_url", "http://trawl:8191")
     monkeypatch.setattr(download_with_annas_archive, "_MAX_DOWNLOAD_BYTES", 10)
 
-    async def fake_solve(_md5, slow_url):
-        return {}, "user-agent", "https://download.example/book.epub"
+    class FakeResponse:
+        status = 200
+        headers = {"X-AA-Filename": "book.epub"}
 
-    response = _FakeProxyResponse(b"x" * 20, {"Content-Length": "20"})
-    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
-    monkeypatch.setattr(
-        download_with_annas_archive.aiohttp,
-        "ClientSession",
-        lambda *_args, **_kwargs: _FakeProxySession(response),
-    )
+        async def __aenter__(self):
+            return self
 
-    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="file_too_large"):
-        await download_with_annas_archive._download_via_slow_partners(
-            "deadbeef", ["https://annas.example/slow_download/one"]
+        async def __aexit__(self, *_args):
+            return False
+
+        async def read(self) -> bytes:
+            return b"x" * 20
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        # aiohttp's session.post() returns an async context manager (not a coroutine).
+        def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(download_with_annas_archive.aiohttp, "ClientSession", lambda *_a, **_k: FakeSession())
+
+    with pytest.raises(download_with_annas_archive.AnnaPartnerError, match="file_validation_failed"):
+        await download_with_annas_archive._download_via_trawl_browser(
+            "deadbeef", "https://annas.example/slow_download/one"
         )
-    assert not (tmp_path / "aa-deadbeef").exists() or not any((tmp_path / "aa-deadbeef").iterdir())
 
 
 @pytest.mark.asyncio
 async def test_slow_partner_emits_status_per_attempt(monkeypatch, tmp_path):
     download_with_annas_archive._PARTNER_HEALTH.clear()
     monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
-    monkeypatch.setattr(download_with_annas_archive.settings, "anna_partner_attempt_limit", 3)
 
     emits = []
 
-    async def fake_solve(_md5, slow_url):
+    async def fake_trawl(_md5, slow_url):
         if slow_url.endswith(("one", "two")):
-            raise download_with_annas_archive.AnnaPartnerError("no_rendered_link")
-        return {}, "user-agent", "https://download.example/book.epub"
+            raise download_with_annas_archive.AnnaPartnerError("trawl_aa_no_d3_link")
+        return b"book-data", "book.epub"
 
     def on_status(status, **details):
         emits.append((status, details))
 
-    response = _FakeProxyResponse(b"book-data", {"Content-Disposition": 'filename="book.epub"'})
-    monkeypatch.setattr(download_with_annas_archive, "_solve_and_get_download_link", fake_solve)
-    monkeypatch.setattr(
-        download_with_annas_archive.aiohttp,
-        "ClientSession",
-        lambda *_args, **_kwargs: _FakeProxySession(response),
-    )
+    monkeypatch.setattr(download_with_annas_archive, "_download_via_trawl_browser", fake_trawl)
 
     path = await download_with_annas_archive._download_via_slow_partners(
         "deadbeef",
@@ -526,9 +495,9 @@ async def test_slow_partner_emits_status_per_attempt(monkeypatch, tmp_path):
 
     assert path.name == "book.epub"
     assert emits == [
-        ("downloading", {"source": "annas_archive", "attempt": 1}),
-        ("downloading", {"source": "annas_archive", "attempt": 2}),
-        ("downloading", {"source": "annas_archive", "attempt": 3}),
+        ("downloading", {"source": "annas_archive", "attempt": 1, "total": 3}),
+        ("downloading", {"source": "annas_archive", "attempt": 2, "total": 3}),
+        ("downloading", {"source": "annas_archive", "attempt": 3, "total": 3}),
     ]
 
 
@@ -1362,3 +1331,106 @@ async def test_get_libgen_link_matches_isbn10_page_for_isbn13_target(monkeypatch
         title="The Great Gatsby", author="F. Scott Fitzgerald",
     )
     assert link.endswith("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6")
+
+
+# ---------------------------------------------------------------------------
+# Kindle delivery: Gmail 552 BlockedMessage fix (EPUB watermark stripping)
+# ---------------------------------------------------------------------------
+
+def _build_epub_bytes(*, marker: str | None = "oceanofpdf.com") -> bytes:
+    """Build a minimal EPUB zip, optionally embedding a root-level marker file."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip",
+                   compress_type=zipfile.ZIP_STORED)
+        z.writestr("META-INF/container.xml", "<container/>")
+        z.writestr("OEBPS/content.opf", "<package/>")
+        z.writestr("OEBPS/c1.xhtml", "<html><body>hi</body></html>")
+        if marker:
+            z.writestr(marker, marker)
+    return buf.getvalue()
+
+
+def test_sanitize_epub_strips_root_watermark_file():
+    data = _build_epub_bytes(marker="oceanofpdf.com")
+    clean = download_flow._sanitize_epub_bytes(data)
+
+    import io as _io
+    import zipfile as _zipfile
+    with _zipfile.ZipFile(_io.BytesIO(clean)) as z:
+        names = z.namelist()
+    assert "oceanofpdf.com" not in names
+    assert "mimetype" in names
+    assert "META-INF/container.xml" in names
+    assert "OEBPS/content.opf" in names
+    assert "OEBPS/c1.xhtml" in names
+
+
+def test_sanitize_epub_keeps_mimetype_first_and_stored():
+    data = _build_epub_bytes()
+    clean = download_flow._sanitize_epub_bytes(data)
+
+    import io as _io
+    import zipfile as _zipfile
+    with _zipfile.ZipFile(_io.BytesIO(clean)) as z:
+        infos = z.infolist()
+        mimetype = z.read("mimetype")
+    assert infos[0].filename == "mimetype"
+    assert infos[0].compress_type == _zipfile.ZIP_STORED
+    assert mimetype == b"application/epub+zip"
+
+
+def test_sanitize_epub_passes_through_non_epub():
+    pdf = b"%PDF-1.3 fake pdf bytes"
+    assert download_flow._sanitize_epub_bytes(pdf) == pdf
+    assert download_flow._sanitize_epub_bytes(b"") == b""
+    assert download_flow._sanitize_epub_bytes(b"not a zip at all") == b"not a zip at all"
+
+
+def test_send_to_kindle_sanitizes_epub_before_attach(monkeypatch, tmp_path):
+    """The delivery path must send sanitized bytes (no watermark)."""
+    import io as _io
+    import smtplib as _smtplib
+    import zipfile as _zipfile
+
+    seen: dict = {}
+
+    class _FakeSMTP:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, *a):
+            pass
+
+        def send_message(self, msg):
+            for part in msg.iter_attachments():
+                seen["payload"] = part.get_payload(decode=True)
+                seen["filename"] = part.get_filename()
+
+    monkeypatch.setattr(_smtplib, "SMTP_SSL", _FakeSMTP)
+
+    book = tmp_path / "book.epub"
+    book.write_bytes(_build_epub_bytes(marker="oceanofpdf.com"))
+    download_flow.send_to_kindle("reader@example.com", book_path=book)
+
+    with _zipfile.ZipFile(_io.BytesIO(seen["payload"])) as z:
+        names = z.namelist()
+    assert "oceanofpdf.com" not in names
+    assert "OEBPS/content.opf" in names
+
+
+def test_ebook_extension_sniffs_epub_and_pdf():
+    epub = _build_epub_bytes(marker=None)
+    assert download_with_annas_archive._ebook_extension(epub) == ".epub"
+    assert download_with_annas_archive._ebook_extension(b"%PDF-1.7 x") == ".pdf"
+    assert download_with_annas_archive._ebook_extension(b"BOOKMOBIgarbage") == ""
+    assert download_with_annas_archive._ebook_extension(b"") == ""

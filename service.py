@@ -298,6 +298,7 @@ def _make_job(
         "current_source": source,
         "format": None,
         "attempt_summary": {},
+        "partner_total": None,
         "stage_started_at_epoch": now.timestamp(),
         "created_at": now.isoformat(),
         "created_at_epoch": now.timestamp(),
@@ -316,6 +317,7 @@ def _set_job_status(
     source: str | None = None,
     file_format: str | None = None,
     attempt: int | None = None,
+    total: int | None = None,
 ) -> None:
     job = jobs.get(job_id)
     if job is None:
@@ -330,6 +332,8 @@ def _set_job_status(
     if attempt is not None:
         summary = job["attempt_summary"]
         summary[status] = max(int(summary.get(status, 0)), attempt)
+    if total is not None:
+        job["partner_total"] = total
     logger.info(
         f"Job decision transition={previous_status}->{status} source={job['current_source']} "
         f"format={job['format'] or 'unknown'} attempts={job['attempt_summary']}"
@@ -389,6 +393,7 @@ def _public_job_payload(job: dict) -> dict:
         "current_source": job["current_source"],
         "format": job["format"],
         "attempt_summary": job["attempt_summary"],
+        "partner_total": job["partner_total"],
         "created_at": job["created_at"],
     }
 

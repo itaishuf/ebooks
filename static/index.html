@@ -627,60 +627,17 @@
       animation: fadeUp 0.72s cubic-bezier(0.22, 1, 0.36, 1) forwards;
     }
 
-    .carousel-wrapper {
-      display: flex;
-      align-items: center;
-      gap: 1rem;
-    }
-
     .carousel {
-      display: flex;
-      gap: 1.65rem;
-      overflow-x: auto;
-      scroll-snap-type: x mandatory;
-      scroll-behavior: smooth;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1.2rem;
       padding: 1rem 0.3rem 1.7rem;
-      flex: 1;
-      -ms-overflow-style: none;
-      scrollbar-width: none;
-    }
-
-    .carousel::-webkit-scrollbar { display: none; }
-
-    .carousel-arrow {
-      background: rgba(247, 237, 220, 0.92);
-      border: 1px solid var(--border);
-      width: 46px;
-      height: 46px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
-      color: var(--umber);
-      font-size: 1.3rem;
-      font-family: var(--font-body);
-      font-weight: 600;
-      box-shadow: 0 10px 20px rgba(79, 49, 31, 0.1);
-      transition: background 0.2s, box-shadow 0.2s, transform 0.15s;
-      flex-shrink: 0;
-    }
-
-    .carousel-arrow:hover {
-      background: var(--bg-warm);
-      box-shadow: 0 16px 28px rgba(79, 49, 31, 0.14);
-      transform: scale(1.05);
-    }
-
-    .carousel-arrow:active {
-      transform: scale(0.97);
     }
 
     .carousel-item {
-      scroll-snap-align: start;
-      flex-shrink: 0;
-      width: 162px;
-      height: 244px;
+      width: 100%;
+      aspect-ratio: 2 / 3;
+      max-height: 320px;
       border-radius: 16px;
       overflow: hidden;
       position: relative;
@@ -761,6 +718,20 @@
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .overlay-language {
+      display: inline-block;
+      margin-top: 0.35rem;
+      padding: 0.1rem 0.4rem;
+      font-size: 0.62rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(251, 241, 231, 0.55);
+      border: 1px solid rgba(251, 241, 231, 0.18);
+      border-radius: 3px;
+      line-height: 1.4;
     }
 
     .overlay-action {
@@ -936,9 +907,10 @@
 
     .step-note {
       grid-column: 2;
-      font-size: 0.72rem;
-      color: var(--text-secondary, #9a9a9a);
-      margin-top: -0.4rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      margin-top: -0.35rem;
       line-height: 1.4;
     }
 
@@ -1119,6 +1091,15 @@
       color: var(--text-dim);
       font-size: 0.95rem;
       line-height: 1.55;
+    }
+
+    .modal-book-language {
+      color: var(--text-dim);
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-top: 0.25rem;
     }
 
     .modal-actions {
@@ -1341,19 +1322,8 @@
         display: block;
       }
 
-      .carousel-wrapper {
-        gap: 0.5rem;
-      }
-
-      .carousel-arrow {
-        width: 38px;
-        height: 38px;
-        font-size: 1.1rem;
-      }
-
-      .carousel-item {
-        width: 136px;
-        height: 204px;
+      .carousel {
+        gap: 0.9rem;
       }
 
       .jobs-section {
@@ -1371,10 +1341,6 @@
     }
 
     @media (max-width: 480px) {
-      .carousel-arrow {
-        display: none;
-      }
-
       .content {
         padding: 1.5rem 1rem 6rem;
       }
@@ -1398,11 +1364,6 @@
       .welcome-icon {
         width: 92px;
         height: 92px;
-      }
-
-      .carousel-item {
-        width: 124px;
-        height: 186px;
       }
 
       .modal-card {
@@ -1566,28 +1527,21 @@
       <template x-if="searchResults.length > 0">
         <div class="carousel-section">
           <p class="section-label" x-text="searchResults.length + ' books found'"></p>
-          <div class="carousel-wrapper">
-            <button class="carousel-arrow"
-                    @click="scrollCarousel(-1)"
-                    aria-label="Scroll left">&lsaquo;</button>
-            <div class="carousel">
-              <template x-for="(r, index) in searchResults" :key="r.source + ':' + (r.md5 || r.isbn)">
-                <div class="carousel-item"
-                     :style="'animation-delay:' + (index * 0.07) + 's'"
-                     @click="confirmBook = r">
-                  <img :src="r.cover_url" :alt="r.title"
-                       onerror="this.style.display='none'">
-                  <div class="carousel-overlay">
-                    <div class="overlay-title" x-text="r.title"></div>
-                    <div class="overlay-author" x-text="r.author"></div>
-                    <div class="overlay-action">Send to Kindle</div>
-                  </div>
+          <div class="carousel">
+            <template x-for="(r, index) in searchResults" :key="r.source + ':' + (r.md5 || r.isbn)">
+              <div class="carousel-item"
+                   :style="'animation-delay:' + (index * 0.07) + 's'"
+                   @click="confirmBook = r">
+                <img :src="r.cover_url" :alt="r.title"
+                     onerror="this.style.display='none'">
+                <div class="carousel-overlay">
+                  <div class="overlay-title" x-text="r.title"></div>
+                  <div class="overlay-author" x-text="r.author"></div>
+                  <div class="overlay-language" x-show="r.language" x-text="r.language"></div>
+                  <div class="overlay-action">Send to Kindle</div>
                 </div>
-              </template>
-            </div>
-            <button class="carousel-arrow"
-                    @click="scrollCarousel(1)"
-                    aria-label="Scroll right">&rsaquo;</button>
+              </div>
+            </template>
           </div>
         </div>
       </template>
@@ -1625,8 +1579,11 @@
                         </template>
                       </span>
                       <span class="step-copy" x-text="s.label"></span>
+                      <template x-if="s.key === 'searching' && isStepActive(job.status, s.key) && job.currentSource">
+                        <span class="step-note" x-text="job.currentSource === 'annas_archive' ? 'Anna&rsquo;s Archive' : job.currentSource"></span>
+                      </template>
                       <template x-if="s.key === 'downloading' && isStepActive(job.status, s.key) && job.currentSource">
-                        <span class="step-note" x-text="downloadSourceNote(job.currentSource)"></span>
+                        <span class="step-note" x-text="downloadSourceNote(job.currentSource, job.format, job.attemptSummary, job.partnerTotal)"></span>
                       </template>
                     </div>
                   </template>
@@ -1699,6 +1656,7 @@
             <div class="modal-book-meta">
               <p class="modal-book-title" x-text="confirmBook.title"></p>
               <p class="modal-book-author" x-text="confirmBook.author"></p>
+              <p class="modal-book-language" x-show="confirmBook.language" x-text="'Language: ' + confirmBook.language.toUpperCase()"></p>
             </div>
           </div>
           <div class="modal-actions">
@@ -1792,10 +1750,15 @@
           return step ? step.label : 'Working';
         },
 
-        downloadSourceNote(source) {
-          if (source === 'libgen') return 'from LibGen';
-          if (source === 'annas_archive') return "from Anna's Archive";
-          return source ? 'from ' + source : '';
+        downloadSourceNote(source, format, attemptSummary, partnerTotal) {
+          const fmt = format ? format.toUpperCase() : '';
+          const prefix = fmt ? fmt + ' · ' : '';
+          const n = (attemptSummary?.downloading || attemptSummary?.trying_alternative || 1);
+          const total = partnerTotal || 0;
+          const suffix = total > 0 ? ` ${n} of ${total}` : ` #${n}`;
+          if (source === 'libgen') return `${prefix}LibGen${suffix}`;
+          if (source === 'annas_archive') return `${prefix}Anna's Archive partner${suffix}`;
+          return source ? `${prefix}${source}${suffix}` : '';
         },
 
         async init() {
@@ -1835,10 +1798,6 @@
           return /goodreads\.com/.test(text);
         },
 
-        scrollCarousel(dir) {
-          const el = document.querySelector('.carousel');
-          if (el) el.scrollBy({ left: dir * 200, behavior: 'smooth' });
-        },
 
         openSearchPanel() {
           this.sidebarOpen = true;
@@ -2064,6 +2023,7 @@
             currentSource: '',
             format: '',
             attemptSummary: {},
+            partnerTotal: null,
             savedResults,
             title: meta.title || '',
             author: meta.author || '',
@@ -2091,6 +2051,7 @@
               job.currentSource = data.current_source || '';
               job.format = data.format || '';
               job.attemptSummary = data.attempt_summary || {};
+              job.partnerTotal = data.partner_total || null;
             } catch (e) {
               job.status = 'error';
               job.error = e?.message || 'Authentication failed';

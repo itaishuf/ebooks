@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     overload_retry_after_seconds: int = 30
     job_stage_timeout_seconds: int = 12 * 60
 
-    # Libgen mirrors
+    # Libgen mirrors — kept in sync with official list at libgen.vg
     libgen_mirrors: list[str] = [
         "https://libgen.is",
         "https://libgen.st",
@@ -88,14 +88,21 @@ class Settings(BaseSettings):
         "https://libgen.gl",
         "https://libgen.li",
         "https://libgen.rs",
+        "https://libgen.vg",
+        "https://libgen.lc",
     ]
 
-    # FlareSolverr — Cloudflare JS-challenge bypass sidecar
+    # FlareSolverr — Cloudflare JS-challenge bypass sidecar (used for the
+    # Goodreads metadata fallback; the AA slow_download path uses trawl_url).
     flaresolverr_url: str = "http://flaresolverr:8191"
-    # Download proxy — runs on the internal network with direct internet access
-    # (no Tailscale), uses curl_cffi Chrome impersonation for TLS fingerprinting.
-    download_proxy_url: str = "http://download-proxy:8192"
-    anna_partner_attempt_limit: int = 3
+    flaresolverr_timeout_ms: int = 180_000
+    flaresolverr_wait_seconds: int = 15
+    # Trawl — FlareSolverr-compatible solver. Its /aa/download endpoint
+    # (patchright + headless Chromium) is the ONLY verified way to clear
+    # DDoS-Guard on AA's /slow_download/ endpoints; it returns the book bytes
+    # directly (the d3 CDN link is session-bound and useless outside the
+    # browser). Shared bridge network: consumers reach it as http://trawl:8191.
+    trawl_url: str = "http://trawl:8191"
     anna_partner_failure_cooldown_seconds: int = 15 * 60
     anna_partner_failure_threshold: int = 2
 

@@ -14,8 +14,7 @@ Always-on project rules for this repo. Skill-based reference (debug logs, fronte
 | `auth.py` | Google OAuth handling, signed session-cookie parsing, API token validation with tailnet IP gating |
 | `download_flow.py` | Core pipeline: `get_book_info` (ISBN+title from Goodreads), `search_aa_all_formats` (title-based AA search → per-format MD5 dict), `ebook_download`, `ebook_download_by_md5`, `search_books` |
 | `download_with_libgen.py` | Selenium/Firefox download from LibGen (`choose_libgen_mirror`, `get_libgen_link`, `download_book_using_selenium`) |
-| `download_with_annas_archive.py` | FlareSolverr-based slow-download path for Anna's Archive |
-| `download_proxy.py` | Download proxy helper (fallback routing, resilient downloads) |
+| `download_with_annas_archive.py` | AA slow-download path: IA direct first, then trawl `/aa/download` (patchright/Chromium clears DDoS-Guard; `_download_via_trawl_browser` POSTs `TRAWL_URL`, gets book bytes) |
 | `config.py` | Pydantic-settings `Settings` class for server, Google OAuth, Bitwarden, paths, and mirrors |
 | `bitwarden.py` | Bitwarden CLI bootstrap that fills runtime secrets still missing from env |
 | `runtime_bootstrap.py` | Startup helpers such as Anna's Archive mirror selection |

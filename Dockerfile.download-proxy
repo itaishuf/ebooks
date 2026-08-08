@@ -1,5 +1,0 @@
-FROM python:3.11-slim
-RUN pip install --no-cache-dir curl-cffi aiohttp fastapi
-COPY download_proxy.py /app/proxy.py
-COPY abuse_protection.py /app/abuse_protection.py
-CMD ["python", "/app/proxy.py"]

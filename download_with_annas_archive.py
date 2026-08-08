@@ -1,8 +1,10 @@
+import io
 import logging
 import re
 import time
+import zipfile
 from pathlib import Path
-from urllib.parse import unquote, urlencode, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -16,10 +18,6 @@ logger = logging.getLogger(__name__)
 # Matches ISBN-13 (978/979 prefix) and ISBN-10 (9 digits + digit or X).
 _ISBN_RE = re.compile(r'\b(97[89]\d{10}|\d{9}[\dX])\b')
 
-# AA's countdown timer is ~60 s; 70 gives a buffer for slow page renders.
-AA_COUNTDOWN_WAIT_S = 70
-# Total FlareSolverr budget: DDoS-Guard JS challenge (~10 s) + countdown wait + network.
-FLARESOLVERR_TIMEOUT_MS = 120_000
 _PARTNER_HEALTH: dict[str, dict[str, float | int]] = {}
 # Bounds in-memory partner bookkeeping. Partners change rarely, so this is only
 # hit after many distinct partner paths have been seen.
@@ -49,16 +47,6 @@ _CORRUPT_ISBN = frozenset({"4294967295"})
 def _page_isbns(html: str) -> list[str]:
     """Return all valid ISBN-10 / ISBN-13 strings found in an AA MD5 page."""
     return [isbn for isbn in _ISBN_RE.findall(html) if isbn not in _CORRUPT_ISBN]
-
-
-def _extract_filename(content_disposition: str, url: str, md5: str) -> str:
-    """Derive a filename from Content-Disposition, the URL, or the MD5 hash."""
-    if "filename=" in content_disposition:
-        raw = content_disposition.split("filename=")[-1].strip().strip('"').strip("'")
-        if raw:
-            return unquote(raw)
-    url_path = url.split("?")[0].rstrip("/").split("/")[-1]
-    return unquote(url_path) if "." in url_path else f"{md5}.epub"
 
 
 async def _fetch_md5_page(md5: str) -> str:
@@ -142,7 +130,7 @@ def _rank_slow_partner_urls(urls: list[str], now: float | None = None) -> list[s
     return sorted(
         eligible,
         key=lambda url: (-int(health(url).get("successes", 0)), int(health(url).get("failures", 0))),
-    )[: settings.anna_partner_attempt_limit]
+    )
 
 
 def _prune_partner_health() -> None:
@@ -174,65 +162,72 @@ def _record_partner_outcome(slow_url: str, *, success: bool) -> None:
         state["cooldown_until"] = time.monotonic() + settings.anna_partner_failure_cooldown_seconds
 
 
-async def _solve_and_get_download_link(md5: str, slow_url: str) -> tuple[dict, str, str]:
-    """Use FlareSolverr to bypass the DDoS-Guard JS challenge on the AA slow-download
-    page and extract the actual download URL from the rendered HTML.
+async def _download_via_trawl_browser(md5: str, slow_url: str) -> tuple[bytes, str]:
+    """Download a book from an AA slow partner via trawl's /aa/download endpoint.
 
-    Returns (all_cookies, user_agent, absolute_download_url).
+    Trawl runs patchright + headless Chromium end-to-end: it clears the
+    DDoS-Guard browser verification on the /slow_download/ page (the only
+    engine verified to do so — Camoufox/Firefox gets re-challenged), waits
+    for the partner countdown, then clicks the d3 anchor so the REAL browser
+    download carries the session cookies. The d3 URL alone is useless outside
+    the browser session (plain fetches fail), so trawl returns the file bytes.
+
+    Returns (content, filename). Filename comes from Chromium's suggested
+    download name (Content-Disposition of the d3 CDN response).
     """
-    logger.info(f"Anna partner decision md5={md5} stage=flaresolverr action=attempt")
+    logger.info(f"Anna partner decision md5={md5} stage=trawl_aa action=attempt")
 
     try:
-        timeout = aiohttp.ClientTimeout(total=(FLARESOLVERR_TIMEOUT_MS // 1000) + 15)
+        timeout = aiohttp.ClientTimeout(total=300)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                f"{settings.flaresolverr_url}/v1",
-                json={
-                    "cmd": "request.get",
-                    "url": slow_url,
-                    "maxTimeout": FLARESOLVERR_TIMEOUT_MS,
-                    "waitInSeconds": AA_COUNTDOWN_WAIT_S,
-                },
+                f"{settings.trawl_url}/aa/download",
+                json={"url": slow_url},
             ) as resp:
-                if resp.status >= 500:
-                    raise AnnaPartnerError("flaresolverr_unavailable")
-                data = await resp.json()
+                if resp.status != 200:
+                    try:
+                        err = await resp.json()
+                        code = err.get("error", f"http_{resp.status}")
+                    except (aiohttp.ClientError, ValueError):
+                        code = f"http_{resp.status}"
+                    logger.warning(f"Anna partner decision md5={md5} stage=trawl_aa outcome={code}")
+                    raise AnnaPartnerError(f"trawl_aa_{code}")
+                content = await resp.read()
+                filename = resp.headers.get("X-AA-Filename", "")
     except TimeoutError as exc:
-        raise AnnaPartnerError("flaresolverr_timeout") from exc
+        raise AnnaPartnerError("trawl_aa_timeout") from exc
     except (aiohttp.ClientError, ValueError) as exc:
-        raise AnnaPartnerError("flaresolverr_transport_failure") from exc
+        raise AnnaPartnerError("trawl_aa_transport_failure") from exc
 
-    status = data.get("status")
-    if status != "ok":
-        logger.warning(f"Anna partner decision md5={md5} stage=flaresolverr outcome=not_rendered")
-        raise AnnaPartnerError("flaresolverr_not_rendered")
+    if not content or len(content) > _MAX_DOWNLOAD_BYTES:
+        raise AnnaPartnerError("file_validation_failed")
+    logger.info(f"Anna partner decision md5={md5} stage=trawl_aa outcome=success bytes={len(content)}")
+    return content, filename
 
-    solution = data["solution"]
-    all_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
-    user_agent = solution["userAgent"]
 
-    html = solution["response"]
-    soup = BeautifulSoup(html, "html.parser")
+_EBOK_EXTS = (
+    ".pdf", ".epub", ".mobi", ".azw", ".azw3", ".djvu", ".txt",
+    ".cbz", ".cbr", ".doc", ".docx", ".rtf", ".html", ".htm",
+)
 
-    btn = soup.find(id="download-button")
-    if not btn or not btn.get("href"):
-        # Fall back to any anchor whose href looks like a direct download path.
-        btn = next(
-            (
-                a
-                for a in soup.find_all("a", href=True)
-                if "/dl/" in a["href"] or a["href"].endswith((".epub", ".pdf", ".mobi", ".azw3"))
-            ),
-            None,
-        )
 
-    if not btn or not btn.get("href"):
-        raise AnnaPartnerError("no_rendered_link")
+def _ebook_extension(content: bytes) -> str:
+    """Best-effort ebook extension from content magic ('' if unknown).
 
-    href = btn["href"]
-    download_url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
-    logger.info(f"Anna partner decision md5={md5} stage=flaresolverr outcome=success next=proxy")
-    return all_cookies, user_agent, download_url
+    zlib3/oceanofpdf d3 URLs carry NO extension in the filename, and
+    Kindle email delivery needs a real extension to pick up the
+    attachment, so sniff the content when the name is bare.
+    """
+    if content[:5] == b"%PDF-":
+        return ".pdf"
+    if content[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                if "mimetype" in z.namelist() and b"epub" in z.read("mimetype").lower():
+                    return ".epub"
+        except (zipfile.BadZipFile, KeyError, OSError):
+            pass
+    return ""
 
 
 async def _download_via_slow_partners(md5: str, slow_urls: list[str], on_status=None) -> Path:
@@ -248,45 +243,25 @@ async def _download_via_slow_partners(md5: str, slow_urls: list[str], on_status=
     last_error: AnnaPartnerError | None = None
     for index, slow_url in enumerate(candidates, start=1):
         try:
-            _emit_status(on_status, "downloading", source="annas_archive", attempt=index)
+            _emit_status(on_status, "downloading", source="annas_archive", attempt=index, total=len(candidates))
             logger.info(f"Anna partner decision md5={md5} partner_attempt={index}/{len(candidates)}")
-            all_cookies, user_agent, download_url = await _solve_and_get_download_link(md5, slow_url)
-            proxy_url = f"{settings.download_proxy_url}/download?" + urlencode(
-                {"url": download_url, "referer": f"{settings.annas_archive_url}/"}
-            )
-            cookie_str = "; ".join(f"{key}={value}" for key, value in all_cookies.items())
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    proxy_url,
-                    headers={"User-Agent": user_agent, "X-Cookies": cookie_str},
-                    timeout=aiohttp.ClientTimeout(total=360),
-                ) as resp:
-                    if resp.status != 200:
-                        raise AnnaPartnerError("proxy_transport_failure")
-                    content_length = resp.headers.get("Content-Length")
-                    if content_length and content_length.isdigit() and int(content_length) > _MAX_DOWNLOAD_BYTES:
-                        raise AnnaPartnerError("file_too_large")
-                    content = await resp.read()
-                    if not content or len(content) > _MAX_DOWNLOAD_BYTES:
-                        raise AnnaPartnerError("file_validation_failed")
-                    filename = Path(
-                        _extract_filename(resp.headers.get("Content-Disposition", ""), download_url, md5)
-                    ).name
-                    if not filename:
-                        raise AnnaPartnerError("file_validation_failed")
-                    file_path = output_dir / filename
-                    file_path.write_bytes(content)
+            content, filename = await _download_via_trawl_browser(md5, slow_url)
+            safe_name = Path(filename).name if filename else md5
+            if not safe_name.lower().endswith(_EBOK_EXTS):
+                safe_name += _ebook_extension(content)
+            file_path = output_dir / safe_name
+            file_path.write_bytes(content)
             _record_partner_outcome(slow_url, success=True)
-            logger.info(f"Anna partner decision md5={md5} partner_attempt={index} outcome=file_valid")
+            logger.info(f"Anna partner decision md5={md5} partner_attempt={index} outcome=file_valid bytes={len(content)}")
             return file_path
         except AnnaPartnerError as exc:
             last_error = exc
             _record_partner_outcome(slow_url, success=False)
             logger.warning(f"Anna partner decision md5={md5} partner_attempt={index} outcome={exc.outcome_code}")
         except (aiohttp.ClientError, TimeoutError, OSError):
-            last_error = AnnaPartnerError("proxy_transport_failure")
+            last_error = AnnaPartnerError("trawl_aa_transport_failure")
             _record_partner_outcome(slow_url, success=False)
-            logger.warning(f"Anna partner decision md5={md5} partner_attempt={index} outcome=proxy_transport_failure")
+            logger.warning(f"Anna partner decision md5={md5} partner_attempt={index} outcome=trawl_aa_transport_failure")
     raise last_error or AnnaPartnerError("all_partner_attempts_failed")
 
 
@@ -303,8 +278,9 @@ async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = No
        ISBNs from other same-language editions).
     3. Try Internet Archive directly (fast, no bot protection) if an IA source is
        linked from the page.
-    4. Fall back to the FlareSolverr slow-download path + download-proxy sidecar
-       for books not on IA.
+    4. Fall back to trawl's /aa/download endpoint (patchright + headless
+       Chromium) which clears DDoS-Guard on the slow-download page and returns
+       the book bytes — the only verified automated path for AA downloads.
     """
     html = await _fetch_md5_page(md5)
 

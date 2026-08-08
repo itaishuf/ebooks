@@ -54,7 +54,15 @@ def _extract_libgen_identity(html: str) -> dict[str, str]:
     Best-effort: any missing field is returned as ``""``, which simply means
     that link cannot be identity-confirmed.
     """
-    text = " ".join(BeautifulSoup(html, "html.parser").get_text(" ", strip=True).split())
+    soup = BeautifulSoup(html, "html.parser")
+
+    for td in soup.find_all("td"):
+        raw = td.get_text(strip=True)
+        if raw.startswith("Title:"):
+            text = td.get_text(" ", strip=True)
+            break
+    else:
+        text = " ".join(soup.get_text(" ", strip=True).split())
 
     author_label = r"Author(?:\(s\))?"
     next_labels = rf"Author(?:\(s\))?|Title|Publisher|Language|Year|Pages|ISBN|File|Edition|Series"
@@ -70,8 +78,6 @@ def _extract_libgen_identity(html: str) -> dict[str, str]:
     title = _field("Title", next_labels)
     author = _field(author_label, next_labels)
 
-    # ISBN values can be hyphenated or contain both ISBN-10 and ISBN-13, so
-    # match against the text with separators stripped instead of parsing one field.
     compact = re.sub(r"[\s-]", "", text)
     isbn_values = re.findall(r"(97[89]\d{10}|\d{9}[\dXx])", compact)
     return {"title": title, "author": author, "isbn": ",".join(isbn_values)}

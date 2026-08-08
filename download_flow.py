@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import io
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ import re
 import smtplib
 import time
 import unicodedata
+import zipfile
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
@@ -195,8 +197,8 @@ async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
         return ""
 
     logger.info(f"Metadata decision source=goodreads fallback=flaresolverr url={url}")
-    payload = {"cmd": "request.get", "url": url, "maxTimeout": 60_000}
-    timeout = aiohttp.ClientTimeout(total=70)
+    payload = {"cmd": "request.get", "url": url, "maxTimeout": settings.flaresolverr_timeout_ms}
+    timeout = aiohttp.ClientTimeout(total=(settings.flaresolverr_timeout_ms // 1000) + 15)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
             f"{settings.flaresolverr_url}/v1", json=payload
@@ -292,6 +294,42 @@ async def get_book_info(url: str) -> dict[str, str]:
 
 
 
+def _sanitize_epub_bytes(data: bytes) -> bytes:
+    """Rebuild an EPUB zip, dropping non-standard entries.
+
+    Shadow-library rips (zlib3/oceanofpdf, libgen, ...) embed root-level
+    watermark files (e.g. ``oceanofpdf.com``). Gmail's content scanner
+    blocks messages carrying zips with such marker files
+    (``552 5.7.0 ... content presents a potential security issue``), which
+    breaks Kindle email delivery even though the book itself is fine.
+    Keep only the standard EPUB entries (``mimetype``, ``META-INF/``,
+    ``OEBPS/``); the result is a valid EPUB that passes Gmail.
+
+    Non-EPUB input (PDF, MOBI, plain files) is returned unchanged.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zin:
+            names = zin.namelist()
+            if "mimetype" not in names:
+                return data
+            mimetype = zin.read("mimetype")
+            if b"epub" not in mimetype.lower():
+                return data
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+                # EPUB spec: mimetype must be first and stored (uncompressed).
+                info = zipfile.ZipInfo("mimetype")
+                zout.writestr(info, mimetype, compress_type=zipfile.ZIP_STORED)
+                for name in names:
+                    if name == "mimetype":
+                        continue
+                    if name.startswith(("META-INF/", "OEBPS/")):
+                        zout.writestr(name, zin.read(name))
+            return out.getvalue()
+    except (zipfile.BadZipFile, KeyError, OSError):
+        return data
+
+
 @log_call
 def send_to_kindle(email: str, book_path: Path | None = None,
                    book_data: bytes = b'', filename: str = ''):
@@ -308,6 +346,7 @@ def send_to_kindle(email: str, book_path: Path | None = None,
     else:
         file_data = book_data
         file_name = filename
+    file_data = _sanitize_epub_bytes(file_data)
     logger.info(f"file size: {round(len(file_data) / 1000, 1)}KB")
     msg.add_attachment(file_data, maintype='application', subtype='octet-stream',
                        filename=file_name)
@@ -472,14 +511,14 @@ async def _fetch_google_books_search(query: str) -> list[dict]:
         raise GoogleBooksProviderError("invalid_configuration")
     params = {
         "q": query,
-        "maxResults": "20",
+        "maxResults": "40",
         "printType": "books",
         "key": settings.google_books_api_key,
     }
     timeout = aiohttp.ClientTimeout(total=10)
     logger.info(
         f"Metadata decision source=google_books query={query!r} api_host=www.googleapis.com "
-        "language_filter=provider_ranked limit=20 timeout_seconds=10"
+                "language_filter=provider_ranked limit=40 timeout_seconds=10"
     )
     for attempt in range(3):
         try:
