@@ -22,6 +22,7 @@ from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
 from starlette.middleware.sessions import SessionMiddleware
 
 from abuse_protection import (
+    DailyQuotaTracker,
     RateLimitPolicy,
     SlidingWindowRateLimiter,
     cleanup_download_artifacts,
@@ -33,9 +34,11 @@ from abuse_protection import (
     sanitize_error_detail,
     sanitize_for_log,
 )
+from api_keys import get_api_key_store, load_api_key_store
 from auth import (
     AuthenticatedUser,
     clear_authenticated_session,
+    extract_bearer_token,
     get_app_base_url,
     get_current_user,
     get_google_redirect_uri,
@@ -112,6 +115,7 @@ jobs: dict[str, dict] = {}
 _start_time: float = 0.0
 _last_cleanup_at: float = 0.0
 _rate_limiter = SlidingWindowRateLimiter()
+_daily_quota_tracker = DailyQuotaTracker()
 _download_semaphore: asyncio.Semaphore | None = None
 
 
@@ -154,6 +158,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         ) from None
     except ValueError as exc:
         raise SystemExit(f"\n  Auth configuration error: {exc}\n") from None
+    load_api_key_store(settings.api_keys_file)
     await bootstrap_annas_archive_url()
     _download_semaphore = asyncio.Semaphore(settings.max_concurrent_download_jobs)
     _start_time = time.monotonic()
@@ -382,6 +387,55 @@ def _download_semaphore_instance() -> asyncio.Semaphore:
     if _download_semaphore is None:
         _download_semaphore = asyncio.Semaphore(settings.max_concurrent_download_jobs)
     return _download_semaphore
+
+
+def _enforce_api_key_limits(
+    user: AuthenticatedUser,
+    http_request: Request,
+    kindle_email: str,
+) -> int:
+    """Enforce email allowlist and daily quota for API key users.
+
+    Returns the remaining daily quota for response header.
+    Raises HTTPException on violations.
+    """
+    if not user.user_id.startswith("api:"):
+        return -1  # not an API key user, no quota enforcement
+
+    store = get_api_key_store()
+    if store is None:
+        return -1
+
+    token = extract_bearer_token(http_request)
+    if token is None:
+        return -1
+
+    record = store.lookup(token)
+    if record is None:
+        return -1
+
+    # Email allowlist check
+    if kindle_email and not store.is_email_allowed(record, kindle_email):
+        logger.warning(
+            f"Rejected download: email {sanitize_for_log(kindle_email)} not in allowlist for key {record.key_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This API key is not authorized to send to that email address.",
+        )
+
+    # Daily quota check
+    allowed, remaining, retry_after = _daily_quota_tracker.check(
+        user.user_id, record.daily_quota
+    )
+    if not allowed:
+        logger.warning(f"Daily quota exceeded for key {record.key_id}")
+        raise rate_limit_exceeded(
+            retry_after,
+            f"Daily download limit of {record.daily_quota} reached.",
+        )
+
+    return remaining
 
 
 def _public_job_payload(job: dict) -> dict:
@@ -652,6 +706,7 @@ async def download_from_goodreads(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
+    daily_remaining = _enforce_api_key_limits(user, http_request, str(payload.kindle_mail))
     job_id = _make_job(user, client_ip=client_ip, source="goodreads")
     logger.info(
         f"Download routing decision source=goodreads_url user={user.user_id} "
@@ -667,7 +722,11 @@ async def download_from_goodreads(
             lambda: ebook_download(str(payload.goodreads_url), payload.kindle_mail, on_status=on_status),
         )
     )
-    return {"job_id": job_id}
+    resp = {"job_id": job_id}
+    headers = {}
+    if daily_remaining >= 0:
+        headers["X-Daily-Remaining"] = str(daily_remaining)
+    return JSONResponse(content=resp, headers=headers)
 
 
 @app.post('/download/isbn')
@@ -705,6 +764,7 @@ async def download_from_metadata(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
+    daily_remaining = _enforce_api_key_limits(user, http_request, str(payload.kindle_mail))
     job_id = _make_job(user, client_ip=client_ip, source="google_books_metadata")
     logger.info(
         f"Download routing decision source=google_books_metadata user={user.user_id} "
@@ -727,7 +787,11 @@ async def download_from_metadata(
             ),
         )
     )
-    return {"job_id": job_id}
+    resp = {"job_id": job_id}
+    headers = {}
+    if daily_remaining >= 0:
+        headers["X-Daily-Remaining"] = str(daily_remaining)
+    return JSONResponse(content=resp, headers=headers)
 
 
 @app.post('/download/md5')
@@ -765,6 +829,7 @@ async def download_from_md5(
         max_jobs_per_ip=settings.max_jobs_per_ip,
         retry_after_seconds=settings.overload_retry_after_seconds,
     )
+    daily_remaining = _enforce_api_key_limits(user, http_request, str(payload.kindle_mail))
     job_id = _make_job(user, client_ip=client_ip, source=payload.source)
     logger.info(f"Created MD5 download job source={payload.source} for {user.user_id}")
 
@@ -781,7 +846,11 @@ async def download_from_md5(
             ),
         )
     )
-    return {"job_id": job_id}
+    resp = {"job_id": job_id}
+    headers = {}
+    if daily_remaining >= 0:
+        headers["X-Daily-Remaining"] = str(daily_remaining)
+    return JSONResponse(content=resp, headers=headers)
 
 
 @app.get('/jobs/{job_id}')

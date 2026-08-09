@@ -136,12 +136,26 @@ def get_session_user_payload(request: Request) -> dict | None:
 
 
 def get_api_token_user(request: Request) -> AuthenticatedUser | None:
-    if not settings.api_token:
-        return None
     auth_header = request.headers.get("authorization", "")
     if not auth_header.lower().startswith("bearer "):
         return None
     token = auth_header[7:]
+    if not token:
+        return None
+
+    # Try multi-key store first
+    from api_keys import get_api_key_store
+    store = get_api_key_store()
+    if store is not None:
+        record = store.lookup(token)
+        if record is not None:
+            return store.to_user(record)
+        # Key store is enabled but token didn't match — fall through to legacy
+        # (allows old single token to still work during migration)
+
+    # Fallback to single shared token
+    if not settings.api_token:
+        return None
     if not hmac.compare_digest(token, settings.api_token):
         return None
     if not _is_tailnet_client(request):
@@ -156,12 +170,25 @@ def get_api_token_user(request: Request) -> AuthenticatedUser | None:
 
 
 def is_api_token_request(request: Request) -> bool:
-    if not settings.api_token:
-        return False
     auth_header = request.headers.get("authorization", "")
     if not auth_header.lower().startswith("bearer "):
         return False
-    return hmac.compare_digest(auth_header[7:], settings.api_token) and _is_tailnet_client(request)
+    token = auth_header[7:]
+    if not token:
+        return False
+
+    # Try multi-key store first
+    from api_keys import get_api_key_store
+    store = get_api_key_store()
+    if store is not None:
+        record = store.lookup(token)
+        if record is not None:
+            return True
+
+    # Fallback to single shared token
+    if not settings.api_token:
+        return False
+    return hmac.compare_digest(token, settings.api_token) and _is_tailnet_client(request)
 
 
 def _is_tailnet_client(request: Request) -> bool:
@@ -169,6 +196,14 @@ def _is_tailnet_client(request: Request) -> bool:
         return ipaddress.ip_address(extract_client_ip(request, settings.trusted_proxy_ips)) in _TAILNET_NETWORK
     except ValueError:
         return False
+
+
+def extract_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:]
+    return token if token else None
 
 
 def get_current_user(request: Request) -> AuthenticatedUser:

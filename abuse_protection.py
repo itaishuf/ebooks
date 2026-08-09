@@ -6,6 +6,7 @@ import time
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qs, urlsplit, urlencode as _urlencode
@@ -233,3 +234,45 @@ def _replace_labeled_secrets(text: str) -> str:
         lambda match: f"{match.group(1)}{match.group(2)}{SECRET_REPLACEMENT}",
         text,
     )
+
+
+class DailyQuotaTracker:
+    """Track per-user downloads per calendar day (UTC)."""
+
+    def __init__(self) -> None:
+        self._events: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = Lock()
+
+    def _utc_day_key(self, ts: float) -> str:
+        dt = datetime.fromtimestamp(ts, tz=UTC)
+        return dt.strftime("%Y-%m-%d")
+
+    def check(self, user_id: str, limit: int) -> tuple[bool, int, int]:
+        """Check if user is within their daily quota.
+
+        Returns:
+            (allowed, remaining, retry_after_seconds)
+        """
+        if limit <= 0:
+            return True, 0, 0
+
+        now = time.time()
+        day_key = self._utc_day_key(now)
+        bucket_key = f"{user_id}:{day_key}"
+        cutoff = now - 86400  # 24h window
+
+        with self._lock:
+            bucket = self._events[bucket_key]
+            while bucket and bucket[0] <= cutoff:
+                bucket.popleft()
+
+            current_count = len(bucket)
+            remaining = max(0, limit - current_count)
+
+            if current_count >= limit:
+                # Calculate when the oldest entry in today's window expires
+                retry_after = max(1, math.ceil(bucket[0] + 86400 - now))
+                return False, 0, retry_after
+
+            bucket.append(now)
+            return True, remaining - 1, 0

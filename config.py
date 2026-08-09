@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     api_token_bw_item_id: str = "29378e86-fd28-4826-abdf-d93e4ceb9363"
     api_token_user_email: str = ""
 
+    # Multi-key API authentication (per-user keys with quotas)
+    api_keys_file: str = ""  # path to api_keys.json; empty = disabled (fall back to single api_token)
+
     # Runtime application secrets (populated from Bitwarden item IDs at startup)
     gmail_password: str = ""
     google_client_secret: str = ""
