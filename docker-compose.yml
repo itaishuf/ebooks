@@ -53,8 +53,10 @@ services:
       DOWNLOAD_DIR: /data/downloads
       LOG_PATH: /data/books.log
       PORT: *ebookarr_port
+      API_KEYS_FILE: /app/api_keys.json
     volumes:
       - ebookarr-data:/data
+      - ./api_keys.json:/app/api_keys.json:rw
     network_mode: service:tailscale
     restart: unless-stopped
 

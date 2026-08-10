@@ -143,21 +143,39 @@ class ApiKeyStore:
 
 
 _store: ApiKeyStore | None = None
+_store_path: str = ""
+_store_mtime: float = 0.0
 
 
 def get_api_key_store() -> ApiKeyStore | None:
+    global _store, _store_mtime
+    if _store is None or not _store_path:
+        return _store
+    # Hot-reload: check if file changed since last load
+    try:
+        current_mtime = Path(_store_path).stat().st_mtime
+        if current_mtime > _store_mtime:
+            logger.info("API key store file changed, reloading")
+            _store = ApiKeyStore(_store_path)
+            _store_mtime = current_mtime
+    except OSError:
+        pass
     return _store
 
 
 def load_api_key_store(file_path: str) -> ApiKeyStore | None:
-    global _store
+    global _store, _store_path, _store_mtime
     if not file_path:
         _store = None
+        _store_path = ""
         return None
     try:
         _store = ApiKeyStore(file_path)
+        _store_path = file_path
+        _store_mtime = Path(file_path).stat().st_mtime
         return _store
     except Exception as exc:
         logger.error(f"Failed to initialize API key store: {exc}")
         _store = None
+        _store_path = ""
         return None
