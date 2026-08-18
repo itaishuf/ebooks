@@ -27,7 +27,7 @@ async def _find_healthy_annas_archive_mirror() -> str | None:
                     page = await response.text()
             except (aiohttp.ClientError, TimeoutError):
                 continue
-            if response.status == 200 and "/md5/" in page:
+            if response.status == 200 and "for sale" not in page and "domain may" not in page:
                 return mirror
     return None
 
@@ -39,7 +39,7 @@ async def bootstrap_annas_archive_url() -> AnnasArchiveBootstrapResult:
         logger.info(f"Anna's Archive mirror selected: {mirror}")
         return AnnasArchiveBootstrapResult(selected_url=mirror, healthy_url=mirror)
 
-    fallback_url = settings.annas_archive_mirrors[0]
+    fallback_url = "https://annas-archive.gl"
     settings.annas_archive_url = fallback_url
-    logger.warning(f"No Anna's Archive mirror responded; falling back to {fallback_url}")
+    logger.warning(f"No Anna's Archive mirror responded; using {fallback_url} (search via FlareSolverr)")
     return AnnasArchiveBootstrapResult(selected_url=fallback_url, healthy_url=None)

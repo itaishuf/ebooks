@@ -189,6 +189,42 @@ async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
     raise last_error
 
 
+async def _fetch_aa_via_trawl(query: str) -> str:
+    """Search Anna's Archive via Selenium+Firefox to bypass DDoS-Guard."""
+    import asyncio
+    from functools import partial
+
+    def _fetch_sync(q: str) -> str:
+        from selenium import webdriver
+        from selenium.webdriver.firefox.options import Options as FirefoxOptions
+
+        url = f"{settings.annas_archive_url}/search?q={q}"
+        options = FirefoxOptions()
+        options.add_argument("--headless")
+
+        driver = webdriver.Firefox(options=options)
+        try:
+            driver.set_page_load_timeout(30)
+            driver.get(url)
+            # Wait for DDoS-Guard to clear (title changes from challenge page)
+            import time
+            for _ in range(20):
+                time.sleep(1)
+                title = driver.title.lower()
+                if "checking" not in title and "ddos" not in title and "challenge" not in title:
+                    break
+            html = driver.page_source
+            logger.info(f"AA Selenium search OK query={q!r} length={len(html)}")
+            return html
+        finally:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    return await asyncio.to_thread(_fetch_sync, query)
+
+
 async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
     """Retrieve a Goodreads page through FlareSolverr when direct access is blocked."""
     hostname = urlsplit(url).hostname
@@ -390,7 +426,7 @@ async def search_aa_all_formats(isbn: str, title: str = "", author: str = "") ->
 
     logger.info(f"Searching AA for {query!r} (isbn={isbn})")
 
-    html = await _fetch_page_with_retry(search_url)
+    html = await _fetch_aa_via_trawl(query)
     return _parse_aa_search_results(html)
 
 
@@ -489,7 +525,7 @@ async def _search_aa_metadata(query: str) -> list[dict]:
     params = urlencode({"q": query})
     search_url = f"{settings.annas_archive_url}/search?{params}"
     logger.info(f"Metadata decision source=annas_archive query={query!r}")
-    html = await _fetch_page_with_retry(search_url)
+    html = await _fetch_aa_via_trawl(query)
     parsed_results = _parse_aa_metadata_results(html)
     relevant_results = [
         result
