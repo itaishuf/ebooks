@@ -190,15 +190,24 @@ async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
 
 
 async def _fetch_aa_via_trawl(query: str) -> str:
-    """Search Anna's Archive via Selenium+Firefox to bypass DDoS-Guard."""
-    import asyncio
-    from functools import partial
+    """Search Anna's Archive via Selenium+Firefox to bypass DDoS-Guard.
 
-    def _fetch_sync(q: str) -> str:
+    Uses the mirror selector's best mirror and records the outcome so the
+    selector learns even from Selenium-path failures.
+    """
+    import asyncio
+
+    from mirror_selector import (
+        current_annas_archive_url,
+        record_mirror_failure,
+        record_mirror_success,
+    )
+
+    def _fetch_sync(q: str, mirror: str) -> str:
         from selenium import webdriver
         from selenium.webdriver.firefox.options import Options as FirefoxOptions
 
-        url = f"{settings.annas_archive_url}/search?q={q}"
+        url = f"{mirror}/search?q={q}"
         options = FirefoxOptions()
         options.add_argument("--headless")
 
@@ -222,7 +231,14 @@ async def _fetch_aa_via_trawl(query: str) -> str:
             except Exception:
                 pass
 
-    return await asyncio.to_thread(_fetch_sync, query)
+    mirror = current_annas_archive_url()
+    try:
+        html = await asyncio.to_thread(_fetch_sync, query, mirror)
+    except Exception:
+        record_mirror_failure(mirror)
+        raise
+    record_mirror_success(mirror)
+    return html
 
 
 async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
@@ -271,7 +287,9 @@ async def get_book_info(url: str) -> dict[str, str]:
     """Extract ISBN, title, and author from a Goodreads book page.
 
     Returns ``{"isbn": "...", "title": "...", "author": "..."}``.
-    Title/author may be empty if extraction fails.
+    ISBN may be empty when the page carries none but title/author were
+    extracted — the download pipeline searches by title in that case.
+    Raises :class:`BookNotFoundError` only when nothing usable was found.
     """
     logger.info(f"Metadata decision source=goodreads url={url} retrieval=direct")
     try:
@@ -327,7 +345,6 @@ async def get_book_info(url: str) -> dict[str, str]:
 
     logger.info(f"Extracted book info: isbn={isbn}, title={title!r}, author={author!r}")
     return {"isbn": isbn, "title": title, "author": author}
-
 
 
 def _sanitize_epub_bytes(data: bytes) -> bytes:
@@ -421,8 +438,6 @@ async def search_aa_all_formats(isbn: str, title: str = "", author: str = "") ->
     Returns ``{"epub": [md5, ...], "pdf": [...], "mobi": [...]}``.
     """
     query = f"{title} {author}".strip() if title else isbn
-    params = urlencode({"q": query})
-    search_url = f"{settings.annas_archive_url}/search?{params}"
 
     logger.info(f"Searching AA for {query!r} (isbn={isbn})")
 
@@ -520,12 +535,12 @@ def _parse_aa_metadata_results(html: str) -> list[dict]:
 
 
 async def _search_aa_metadata(query: str) -> list[dict]:
-    if not settings.annas_archive_url:
+    if not settings.annas_archive_url and not settings.annas_archive_mirrors:
         raise RuntimeError("Anna's Archive mirror is not configured")
-    params = urlencode({"q": query})
-    search_url = f"{settings.annas_archive_url}/search?{params}"
     logger.info(f"Metadata decision source=annas_archive query={query!r}")
-    html = await _fetch_aa_via_trawl(query)
+    from mirror_selector import fetch_aa_html
+
+    html = await fetch_aa_html(f"/search?{urlencode({'q': query})}")
     parsed_results = _parse_aa_metadata_results(html)
     relevant_results = [
         result
@@ -1171,7 +1186,6 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
         _emit_status(on_status, status, **details)
 
     logger.info(f"Download decision source=annas_archive md5={md5}")
-    last_error: DownloadError | None = None
     book_path: Path | None = None
     for attempt in range(2):
         try:
@@ -1180,8 +1194,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
             _emit("downloading", source="annas_archive", attempt=attempt + 1)
             book_path = await download_book_from_annas_archive(md5, isbns=None, on_status=_emit)
             break
-        except DownloadError as exc:
-            last_error = exc
+        except DownloadError:
             logger.warning(f"Anna direct download failed attempt={attempt + 1}/2 md5={md5}")
             if attempt == 0:
                 await asyncio.sleep(2)
@@ -1215,28 +1228,52 @@ async def ebook_download(goodreads_url: str, kindle_mail: str, on_status=None) -
     )
 
 
+async def _resolve_book_metadata(
+    isbn: str, title: str, author: str, *, language: str = ""
+) -> tuple[str, set[str]]:
+    """Gather edition ISBNs from Google Books for the requested book.
+
+    Returns ``(primary_isbn, all_isbns)``. The primary is the caller's ISBN
+    when present, else the first Google-sourced one. Never raises: Google
+    Books unavailability degrades to the caller-provided ISBN alone.
+    """
+    await _enrich_google_cache_for_book(isbn, title, author)
+    edition_isbns = _google_edition_isbns(title, author, language=language)
+    isbns = ({isbn} | edition_isbns) if isbn else set(edition_isbns)
+    primary = isbn or (sorted(isbns)[0] if isbns else "")
+    logger.info(
+        f"Download decision edition_isbns primary={primary} total={len(isbns)} "
+        f"google_editions={len(edition_isbns)}"
+    )
+    return primary, isbns
+
+
 async def ebook_download_from_metadata(
     isbn: str, title: str, kindle_mail: str, on_status=None, author: str = "", language: str = ""
 ) -> None:
     def _emit(status, **details):
         _emit_status(on_status, status, **details)
 
-    await _enrich_google_cache_for_book(isbn, title, author)
-    edition_isbns = _google_edition_isbns(title, author, language=language)
-    isbns = {isbn} | edition_isbns
-    if len(isbns) > 1:
-        logger.info(f"Download decision edition_isbns primary={isbn} total={len(isbns)}")
-    logger.info(f"Download decision source=metadata isbn={isbn} title={title!r} next=archive_search")
+    primary, isbns = await _resolve_book_metadata(isbn, title, author, language=language)
+    logger.info(f"Download decision source=metadata isbn={primary} title={title!r} next=archive_search")
     _emit("searching")
     _emit("searching", source="annas_archive")
-    all_hashes = await search_aa_all_formats(isbn, title=title, author=author)
+    all_hashes = await search_aa_all_formats(primary, title=title, author=author)
     epub_hashes = all_hashes.get("epub", [])
     pdf_hashes = all_hashes.get("pdf", [])
     mobi_hashes = all_hashes.get("mobi", [])
 
     if not epub_hashes and not pdf_hashes and not mobi_hashes:
+        # Structured not-found record (W5): lets us later separate real
+        # catalog gaps from search-strategy gaps. No PII beyond the query.
+        logger.info(
+            "Not-found record "
+            f"query_title={title!r} query_author={author!r} isbn={isbn or '-'} "
+            f"sources_tried=annas_archive search_query={(title + ' ' + author).strip() or isbn!r}"
+        )
         logger.info("Download decision metadata_search=empty terminal=book_not_found")
-        raise BookNotFoundError(f"No book found for ISBN {isbn}")
+        identifier = f"ISBN {isbn}" if isbn else f"title {title!r}"
+        raise BookNotFoundError(f"No book found for {identifier}")
 
     logger.info(
         f"Download decision format_candidates epub={len(epub_hashes)} pdf={len(pdf_hashes)} mobi={len(mobi_hashes)}"
@@ -1334,12 +1371,13 @@ async def ebook_download_from_metadata(
         if fallback_error is not None:
             logger.info("Download decision terminal=manual_libgen_fallback")
             raise ManualDownloadRequiredError(
-                f"All download attempts failed for ISBN {isbn}",
+                f"All download attempts failed for {'ISBN ' + isbn if isbn else 'title ' + title!r}",
                 fallback_url=fallback_error.fallback_url,
                 fallback_message=fallback_error.fallback_message,
             ) from last_error
         logger.info("Download decision terminal=all_sources_failed")
-        raise DownloadError(f"All download attempts failed for ISBN {isbn}") from last_error
+        identifier = f"ISBN {isbn}" if isbn else f"title {title!r}"
+        raise DownloadError(f"All download attempts failed for {identifier}") from last_error
 
     logger.info(f"Download decision file=ready format={book_path.suffix.lower()} next=kindle_delivery")
     _emit("sending")

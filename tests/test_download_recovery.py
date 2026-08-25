@@ -868,11 +868,11 @@ async def test_aa_metadata_filter_runs_before_result_limit_and_preserves_downloa
     )
     html = f'<div class="js-aarecord-list-outer">{"".join(records)}</div>'
 
-    async def fake_fetch(_url: str) -> str:
+    async def fake_fetch(_path: str) -> str:
         return html
 
     monkeypatch.setattr(download_flow.settings, "annas_archive_url", "https://annas.example")
-    monkeypatch.setattr(download_flow, "_fetch_page_with_retry", fake_fetch)
+    monkeypatch.setattr("mirror_selector.fetch_aa_html", fake_fetch)
 
     results = await download_flow._search_aa_metadata("Target author")
 

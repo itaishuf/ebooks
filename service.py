@@ -299,6 +299,7 @@ def _make_job(
         "status": "queued",
         "error": None,
         "error_code": None,
+        "error_category": None,
         "fallback": None,
         "current_source": source,
         "format": None,
@@ -345,6 +346,26 @@ def _set_job_status(
     )
 
 
+def _error_category(error_code: str) -> str:
+    """Map an internal error code to a user-facing failure category.
+
+    Categories (rendered by the UI):
+      not_in_catalog  — the book is not in any reachable source
+      source_blocked  — sources are temporarily unreachable; retry later
+      system_down     — this service has a problem
+    """
+    if error_code == "book_not_found":
+        return "not_in_catalog"
+    if error_code in {
+        "external_service_unavailable",
+        "stage_timeout",
+        "download_failed",
+        "manual_download_available",
+    }:
+        return "source_blocked"
+    return "system_down"
+
+
 def _job_error_update(error: Exception) -> dict:
     error_message = "Request failed"
     error_code = "request_failed"
@@ -371,6 +392,7 @@ def _job_error_update(error: Exception) -> dict:
         "status": "error",
         "error": sanitize_error_detail(error_message, "Request failed"),
         "error_code": error_code,
+        "error_category": _error_category(error_code),
         "fallback": None,
         "finished_at_epoch": time.time(),
     }
@@ -443,6 +465,7 @@ def _public_job_payload(job: dict) -> dict:
         "status": job["status"],
         "error": job["error"],
         "error_code": job["error_code"],
+        "error_category": job.get("error_category"),
         "fallback": job["fallback"],
         "current_source": job["current_source"],
         "format": job["format"],
@@ -537,6 +560,7 @@ async def _run_job(job_id: str, coro) -> None:
             status="error",
             error="Failed to connect to an external service.",
             error_code="external_service_unavailable",
+            error_category=_error_category("external_service_unavailable"),
             fallback=None,
             finished_at_epoch=time.time(),
         )
@@ -547,6 +571,7 @@ async def _run_job(job_id: str, coro) -> None:
             status="error",
             error="Unexpected error processing request.",
             error_code="unexpected_failure",
+            error_category=_error_category("unexpected_failure"),
             fallback=None,
             finished_at_epoch=time.time(),
         )

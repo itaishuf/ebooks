@@ -1590,7 +1590,9 @@
                 </div>
                 <template x-if="job.status === 'error'">
                   <div class="error-msg">
-                    <p x-text="job.error"></p>
+                    <p x-text="categoryMessage(job.errorCategory) || job.error"></p>
+                    <p x-show="job.errorCategory === 'source_blocked'">Sources were unreachable when this ran. Trying again usually works.</p>
+                    <p x-show="job.errorCategory === 'not_in_catalog'">This book was not found in the catalogs I can reach right now.</p>
                     <p x-show="job.errorCode || job.currentSource || job.format">
                       <span x-show="job.currentSource" x-text="'Last source: ' + job.currentSource"></span>
                       <span x-show="job.format" x-text="(job.currentSource ? ' · ' : '') + 'Format: ' + job.format"></span>
@@ -1748,6 +1750,15 @@
           const effectiveKey = this.effectiveStatus(key);
           const step = this.steps.find(s => s.key === effectiveKey);
           return step ? step.label : 'Working';
+        },
+
+        categoryMessage(category) {
+          const messages = {
+            not_in_catalog: 'Not found in any source I can reach.',
+            source_blocked: 'Sources are unreachable right now. Try again later.',
+            system_down: 'The service hit a problem. Please try again.',
+          };
+          return messages[category] || '';
         },
 
         downloadSourceNote(source, format, attemptSummary, partnerTotal) {
@@ -2019,6 +2030,7 @@
             status: 'queued',
             error: null,
             errorCode: null,
+            errorCategory: null,
             fallback: null,
             currentSource: '',
             format: '',
@@ -2047,6 +2059,7 @@
               job.status = data.status;
               job.error = data.error;
               job.errorCode = data.error_code || null;
+              job.errorCategory = data.error_category || null;
               job.fallback = data.fallback || null;
               job.currentSource = data.current_source || '';
               job.format = data.format || '';

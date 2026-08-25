@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 
 from config import settings
 from exceptions import DownloadError
+from mirror_selector import fetch_aa_html
+from trawl_breaker import ensure_probe_running, is_trawl_down, record_trawl_failure, record_trawl_success
 from utils import log_call
 
 logger = logging.getLogger(__name__)
@@ -50,13 +52,13 @@ def _page_isbns(html: str) -> list[str]:
 
 
 async def _fetch_md5_page(md5: str) -> str:
-    """Fetch the AA MD5 detail page HTML (single shared fetch for all callers)."""
-    md5_url = f"{settings.annas_archive_url}/md5/{md5}"
+    """Fetch the AA MD5 detail page HTML (single shared fetch for all callers).
+
+    Goes through the mirror selector so a dead mirror is skipped and demoted
+    automatically instead of poisoning every request until restart.
+    """
     logger.info(f"Fetching AA MD5 page for md5={md5}")
-    async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
-        async with session.get(md5_url, allow_redirects=True) as resp:
-            logger.info(f"Anna MD5 decision response_status={resp.status}")
-            return await resp.text()
+    return await fetch_aa_html(f"/md5/{md5}")
 
 
 async def _try_internet_archive(md5: str, html: str) -> Path | None:
@@ -176,6 +178,8 @@ async def _download_via_trawl_browser(md5: str, slow_url: str) -> tuple[bytes, s
     download name (Content-Disposition of the d3 CDN response).
     """
     logger.info(f"Anna partner decision md5={md5} stage=trawl_aa action=attempt")
+    if is_trawl_down():
+        raise AnnaPartnerError("trawl_breaker_open")
 
     try:
         timeout = aiohttp.ClientTimeout(total=300)
@@ -195,10 +199,15 @@ async def _download_via_trawl_browser(md5: str, slow_url: str) -> tuple[bytes, s
                 content = await resp.read()
                 filename = resp.headers.get("X-AA-Filename", "")
     except TimeoutError as exc:
+        record_trawl_failure("timeout")
+        ensure_probe_running()
         raise AnnaPartnerError("trawl_aa_timeout") from exc
     except (aiohttp.ClientError, ValueError) as exc:
+        record_trawl_failure("transport_failure")
+        ensure_probe_running()
         raise AnnaPartnerError("trawl_aa_transport_failure") from exc
 
+    record_trawl_success()
     if not content or len(content) > _MAX_DOWNLOAD_BYTES:
         raise AnnaPartnerError("file_validation_failed")
     logger.info(f"Anna partner decision md5={md5} stage=trawl_aa outcome=success bytes={len(content)}")
