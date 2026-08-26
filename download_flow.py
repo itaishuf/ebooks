@@ -22,6 +22,7 @@ from download_with_annas_archive import download_book_from_annas_archive
 from download_with_libgen import (
     choose_libgen_mirror,
     download_book_using_selenium,
+    gather_page_status,
     get_libgen_link,
 )
 from exceptions import (
@@ -1109,20 +1110,49 @@ async def _download_via_libgen(
     title: str = "",
     author: str = "",
 ) -> Path:
+    from open_slum import get_mirrors
+
     primary_isbn = next(iter(isbns), "")
     logger.info(f"Download decision source=libgen identifier={primary_isbn} isbns={len(isbns)} candidates={len(md5_list)}")
-    libgen_mirror = await choose_libgen_mirror()
-    logger.info("Download decision source=libgen mirror=selected next=get_link")
-    url = await get_libgen_link(
-        isbns,
-        md5_list,
-        libgen_mirror,
-        require_confirmation=require_confirmation,
-        title=title,
-        author=author,
-    )
-    logger.info("Download decision source=libgen link=selected next=selenium")
-    return await asyncio.to_thread(download_book_using_selenium, url)
+
+    # Build mirror list: hardcoded config + open-slum.org (cached 5 min).
+    all_mirrors = list(settings.libgen_mirrors)
+    try:
+        slum = await get_mirrors("libgen")
+        for m in slum:
+            if m not in all_mirrors:
+                all_mirrors.append(m)
+    except Exception:
+        pass
+
+    # Probe which mirrors are actually reachable.
+    status = await gather_page_status(all_mirrors)
+    live_mirrors = [s for s in status if s]
+    if not live_mirrors:
+        raise ConnectionError("No active libgen mirror found")
+
+    # Try each live mirror — if one serves nginx stubs or returns no valid
+    # links, move to the next instead of failing immediately.
+    last_error: Exception | None = None
+    for mirror in live_mirrors:
+        logger.info(f"Download decision source=libgen mirror={mirror} next=get_link")
+        try:
+            url = await get_libgen_link(
+                isbns,
+                md5_list,
+                mirror,
+                require_confirmation=require_confirmation,
+                title=title,
+                author=author,
+            )
+            logger.info(f"Download decision source=libgen mirror={mirror} link=selected next=selenium")
+            return await asyncio.to_thread(download_book_using_selenium, url)
+        except BookNotFoundError as exc:
+            logger.warning(f"Download decision source=libgen mirror={mirror} outcome=no_valid_link")
+            last_error = exc
+            continue
+
+    raise last_error or BookNotFoundError(f"No libgen download found for {primary_isbn}")
 
 
 async def _download_via_annas_archive(

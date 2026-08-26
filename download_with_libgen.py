@@ -33,9 +33,21 @@ async def choose_libgen_mirror() -> str:
     """
     Return the first active libgen mirror.
 
+    Merges hardcoded config with open-slum.org mirrors (cached 5 min).
     If no mirrors are available, raises ``ConnectionError``.
     """
-    status = await gather_page_status(settings.libgen_mirrors)
+    from open_slum import get_mirrors
+
+    all_mirrors = list(settings.libgen_mirrors)
+    try:
+        slum = await get_mirrors("libgen")
+        for m in slum:
+            if m not in all_mirrors:
+                all_mirrors.append(m)
+    except Exception:
+        pass
+
+    status = await gather_page_status(all_mirrors)
     mirrors = [stat for stat in status if stat]
     if not mirrors:
         raise ConnectionError('No active libgen mirror found')

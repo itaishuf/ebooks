@@ -31,6 +31,21 @@ _MIRROR_COOLDOWN_SECONDS = 15 * 60
 _MIRROR_FETCH_TIMEOUT = aiohttp.ClientTimeout(total=20)
 _MIRROR_MAX_ATTEMPTS = 3
 
+# Mirrors discovered from open-slum.org (populated by refresh_slum_mirrors).
+_slum_mirrors: list[str] = []
+
+
+async def refresh_slum_mirrors() -> None:
+    """Fetch current AA mirror list from open-slum.org (cached 5 min)."""
+    global _slum_mirrors
+    try:
+        from open_slum import get_mirrors
+        mirrors = await get_mirrors("annas")
+        if mirrors:
+            _slum_mirrors = mirrors
+    except Exception as exc:
+        logger.debug(f"open-slum.org refresh skipped: {exc.__class__.__name__}")
+
 
 class AnnasArchiveUnreachableError(DownloadError):
     """Every configured mirror failed for this request."""
@@ -144,14 +159,22 @@ def reset_mirror_state_for_tests() -> None:
 
 def _eligible(now: float | None = None) -> list[str]:
     now = now if now is not None else time.monotonic()
+    # Merge hardcoded config with any open-slum.org mirrors (async fetch
+    # cached for 5 min). Open-slum mirrors that aren't in the config get
+    # added; config mirrors that open-slum dropped stay (our health scoring
+    # handles demotion).
+    all_mirrors = list(settings.annas_archive_mirrors)
+    for url in _slum_mirrors:
+        if url not in all_mirrors:
+            all_mirrors.append(url)
     eligible = [
         url
-        for url in settings.annas_archive_mirrors
+        for url in all_mirrors
         if _mirror_state.get(url, {}).get("cooldown_until", 0.0) <= now
     ]
     # Total-outage behaviour: serve the full list ordered by score rather
     # than refusing before any attempt was made.
-    pool = eligible or list(settings.annas_archive_mirrors)
+    pool = eligible or all_mirrors
     return sorted(pool, key=lambda url: (-_entry(url)["successes"], _entry(url)["failures"], url))
 
 
@@ -224,6 +247,7 @@ async def fetch_aa_html(path: str, *, timeout: aiohttp.ClientTimeout | None = No
     callers translate that into their own error taxonomy.
     """
     _load_state()
+    await refresh_slum_mirrors()
     last_error: Exception | None = None
     tried: set[str] = set()
 
