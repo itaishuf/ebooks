@@ -233,55 +233,16 @@ async def _fetch_page_with_retry(url: str, max_retries: int = 3) -> str:
 
 
 async def _fetch_aa_via_trawl(query: str) -> str:
-    """Search Anna's Archive via Selenium+Firefox to bypass DDoS-Guard.
+    """Search Anna's Archive via trawl's browser-backed /aa/search endpoint.
 
-    Uses the mirror selector's best mirror and records the outcome so the
-    selector learns even from Selenium-path failures.
+    Delegates to the mirror selector's trawl fallback, which runs
+    patchright+Chromium inside the trrawl container to clear DDoS-Guard.
+    Replaces the old in-container Selenium+Firefox path that no longer
+    passes DDG's fingerprint checks.
     """
-    import asyncio
+    from mirror_selector import _fetch_aa_search_via_trawl
 
-    from mirror_selector import (
-        current_annas_archive_url,
-        record_mirror_failure,
-        record_mirror_success,
-    )
-
-    def _fetch_sync(q: str, mirror: str) -> str:
-        from selenium import webdriver
-        from selenium.webdriver.firefox.options import Options as FirefoxOptions
-
-        url = f"{mirror}/search?q={q}"
-        options = FirefoxOptions()
-        options.add_argument("--headless")
-
-        driver = webdriver.Firefox(options=options)
-        try:
-            driver.set_page_load_timeout(30)
-            driver.get(url)
-            # Wait for DDoS-Guard to clear (title changes from challenge page)
-            import time
-            for _ in range(20):
-                time.sleep(1)
-                title = driver.title.lower()
-                if "checking" not in title and "ddos" not in title and "challenge" not in title:
-                    break
-            html = driver.page_source
-            logger.info(f"AA Selenium search OK query={q!r} length={len(html)}")
-            return html
-        finally:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-
-    mirror = current_annas_archive_url()
-    try:
-        html = await asyncio.to_thread(_fetch_sync, query, mirror)
-    except Exception:
-        record_mirror_failure(mirror)
-        raise
-    record_mirror_success(mirror)
-    return html
+    return await _fetch_aa_search_via_trawl(query)
 
 
 async def _fetch_goodreads_page_with_flaresolverr(url: str) -> str:
