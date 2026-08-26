@@ -56,7 +56,7 @@ async def choose_libgen_mirror() -> str:
 
 
 async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str:
-    async with session.get(url) as response:
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as response:
         return await response.text()
 
 
@@ -149,6 +149,11 @@ async def get_libgen_link(
 
     status = await gather_page_status(links)
     active_links = [stat for stat in status if stat]
+    # Cap at 15 — enough to find the book if it's there, but prevents
+    # burning 30s+ fetching 30+ pages when the book isn't on this mirror.
+    if len(active_links) > 15:
+        logger.info(f"LibGen link decision capping active_links {len(active_links)} -> 15")
+        active_links = active_links[:15]
 
     async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         pages = await asyncio.gather(*[_fetch_page(session, link) for link in active_links])

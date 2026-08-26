@@ -1324,10 +1324,13 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_epub")
             _emit("downloading", source="libgen", file_format="epub", attempt=1)
-            book_path = await _download_via_libgen(isbns, epub_hashes, title=title, author=author)
+            book_path = await asyncio.wait_for(
+                _download_via_libgen(isbns, epub_hashes, title=title, author=author),
+                timeout=60,
+            )
             logger.info(f"Downloaded via LibGen (epub): {book_path.name}")
-        except (ConnectionError, DownloadError, BookNotFoundError) as e:
-            logger.warning(f"LibGen download (epub) failed: {e}")
+        except (ConnectionError, DownloadError, BookNotFoundError, TimeoutError) as e:
+            logger.warning(f"LibGen download (epub) failed: {e.__class__.__name__}: {e}")
             if isinstance(e, ManualDownloadRequiredError):
                 fallback_error = e
             last_error = e
@@ -1337,12 +1340,15 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_pdf reason=epub_unavailable_or_failed")
             _emit("downloading", source="libgen", file_format="pdf", attempt=1)
-            book_path = await _download_via_libgen(isbns, pdf_hashes, title=title, author=author)
+            book_path = await asyncio.wait_for(
+                _download_via_libgen(isbns, pdf_hashes, title=title, author=author),
+                timeout=60,
+            )
             logger.info(f"Downloaded via LibGen (pdf): {book_path.name}")
             last_error = None
             fallback_error = None
-        except (ConnectionError, DownloadError, BookNotFoundError) as e:
-            logger.warning(f"LibGen download (pdf) failed: {e}")
+        except (ConnectionError, DownloadError, BookNotFoundError, TimeoutError) as e:
+            logger.warning(f"LibGen download (pdf) failed: {e.__class__.__name__}: {e}")
             if isinstance(e, ManualDownloadRequiredError):
                 fallback_error = e
             last_error = e
@@ -1352,12 +1358,15 @@ async def ebook_download_from_metadata(
         try:
             logger.info("Download decision branch=libgen_mobi reason=preferred_formats_unavailable_or_failed")
             _emit("downloading", source="libgen", file_format="mobi", attempt=1)
-            book_path = await _download_via_libgen(isbns, mobi_hashes, title=title, author=author)
+            book_path = await asyncio.wait_for(
+                _download_via_libgen(isbns, mobi_hashes, title=title, author=author),
+                timeout=60,
+            )
             book_path = await _try_convert_mobi(book_path)
             logger.info(f"Downloaded via LibGen (mobi→{book_path.suffix.lstrip('.')}): {book_path.name}")
             last_error = None
             fallback_error = None
-        except (ConnectionError, DownloadError, BookNotFoundError) as e:
+        except (ConnectionError, DownloadError, BookNotFoundError, TimeoutError) as e:
             logger.warning(f"LibGen download (mobi) failed: {e}")
             if isinstance(e, ManualDownloadRequiredError):
                 fallback_error = e
