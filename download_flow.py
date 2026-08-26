@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import smtplib
+import subprocess
 import time
 import unicodedata
 import zipfile
@@ -47,48 +48,47 @@ _GOOGLE_COVER_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _GOOGLE_CACHE_MAX_ENTRIES = 64
 _GOOGLE_BREAKER = {"consecutive_failures": 0, "open_until": 0.0}
 _STRUCTURED_GOOGLE_QUERIES = ("isbn:", "intitle:", "inauthor:")
-_MIN_BOOK_BYTES = 50_000  # 50KB — real books are never smaller
+
+# MIME types that `file(1)` reports for real ebooks.
+_ACCEPTED_EBOOK_MIMES = frozenset({
+    "application/epub+zip",
+    "application/pdf",
+    "application/x-mobipocket-ebook",
+    "application/x-sony-bbeb",          # Sony LRF
+    "application/vnd.amazon.ebook",     # AZW
+})
 
 
-def _validate_book_file(data: bytes, source: str = "") -> None:
+def _validate_book_file(data: bytes | Path, source: str = "") -> None:
     """Reject downloaded content that isn't a real ebook.
 
-    Raises DownloadError with a descriptive reason when the content is
-    clearly a server stub, error page, or corrupt file.  Call this at
-    every download-completion point so invalid artifacts trigger the
-    next provider/mirror instead of being emailed to Kindle.
+    Uses ``file(1)`` (libmagic) for detection — no arbitrary size
+    thresholds, no manual header parsing.  Raises DownloadError when
+    the content is a server stub, error page, or unrecognized format.
+    Call at every download-completion point so invalid artifacts trigger
+    the next provider/mirror instead of being emailed to Kindle.
     """
-    if len(data) < _MIN_BOOK_BYTES:
-        raise DownloadError(
-            f"Downloaded file too small ({len(data)} bytes < {_MIN_BOOK_BYTES}): "
-            f"likely a server stub or error page"
-        )
+    try:
+        if isinstance(data, Path):
+            result = subprocess.run(
+                ["file", "--brief", "--mime-type", str(data)],
+                capture_output=True, timeout=10,
+            )
+        else:
+            result = subprocess.run(
+                ["file", "--brief", "--mime-type", "-"],
+                input=data, capture_output=True, timeout=10,
+            )
+        mime = result.stdout.decode().strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning(f"file(1) detection failed ({source}): {exc}; skipping validation")
+        return
 
-    # EPUB: PK zip with mimetype entry containing 'epub'
-    if data[:4] == b"PK\x03\x04":
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as z:
-                if "mimetype" in z.namelist():
-                    mt = z.read("mimetype").strip().lower()
-                    if b"epub" in mt:
-                        return  # valid EPUB
-                    raise DownloadError(
-                        f"ZIP mimetype is not EPUB: {mt!r}"
-                    )
-                raise DownloadError("ZIP missing mimetype entry")
-        except (zipfile.BadZipFile, KeyError, OSError) as e:
-            raise DownloadError(f"Invalid ZIP/EPUB: {e.__class__.__name__}") from e
-
-    # PDF
-    if data[:5] == b"%PDF-":
-        return  # valid PDF
-
-    # MOBI/AZW: starts with MOBI, BOOK, TEXt, or REAd header
-    if data[:4] in (b"MOBI", b"BOOK", b"TEXt", b"REAd"):
-        return  # likely MOBI/AZW
+    if mime in _ACCEPTED_EBOOK_MIMES:
+        return
 
     raise DownloadError(
-        f"Unknown file format (magic: {data[:8]!r}); not EPUB, PDF, or MOBI"
+        f"Downloaded file detected as {mime!r} (not a valid ebook)"
     )
 
 
@@ -1237,7 +1237,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
             _emit("downloading", source="annas_archive", attempt=attempt + 1)
             book_path = await download_book_from_annas_archive(md5, isbns=None, on_status=_emit)
             assert book_path is not None  # guaranteed by successful return
-            _validate_book_file(book_path.read_bytes(), "annas_archive")
+            _validate_book_file(book_path, "annas_archive")
             break
         except DownloadError:
             logger.warning(f"Anna direct download failed attempt={attempt + 1}/2 md5={md5}")

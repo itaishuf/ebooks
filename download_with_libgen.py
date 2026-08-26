@@ -231,7 +231,7 @@ def download_book_using_selenium(url: str) -> Path:
                 # LibGen sometimes serves stubs/error pages as .epub.
                 try:
                     from download_flow import _validate_book_file
-                    _validate_book_file(book_path.read_bytes(), "libgen")
+                    _validate_book_file(book_path, "libgen")
                 except Exception as exc:
                     logger.warning(
                         f"LibGen download validation failed for {url} on page attempt "
