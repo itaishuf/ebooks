@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
 DOWNLOAD_POLL_ATTEMPTS = 10
 DOWNLOAD_RECLICK_ATTEMPTS = 2
+_BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
 
 
 @log_call
@@ -149,7 +150,7 @@ async def get_libgen_link(
     status = await gather_page_status(links)
     active_links = [stat for stat in status if stat]
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         pages = await asyncio.gather(*[_fetch_page(session, link) for link in active_links])
 
     requested_isbns = {_normalize_isbn(i) for i in isbns if i}
@@ -370,7 +371,7 @@ def _log_download_dir_state(download_dir: Path, label: str) -> None:
 
 @log_call
 async def gather_page_status(urls: list[str]) -> list[str | None]:
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(headers=_BROWSER_HEADERS) as session:
         tasks = [check_page_status(session, url) for url in urls]
         return await asyncio.gather(*tasks)
 
