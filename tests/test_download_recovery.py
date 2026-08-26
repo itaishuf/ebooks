@@ -58,6 +58,32 @@ class _FakeDriver:
         pass
 
 
+def _make_valid_epub_bytes(min_bytes: int = 60_000) -> bytes:
+    """Generate a minimal valid EPUB exceeding *min_bytes*.
+
+    The EPUB spec requires mimetype as the first entry (uncompressed)
+    and a META-INF/container.xml.  Padding is added to exceed the
+    download-validation size threshold.
+    """
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        # mimetype MUST be first and uncompressed per EPUB spec
+        z.writestr(
+            zipfile.ZipInfo("mimetype", date_time=(2026, 1, 1, 0, 0, 0)),
+            "application/epub+zip",
+            compress_type=zipfile.ZIP_STORED,
+        )
+        z.writestr("META-INF/container.xml", "<container/>")
+        z.writestr("OEBPS/content.opf", "<package/>")
+        # Pad to exceed validation threshold
+        padding = b"\x00" * max(0, min_bytes - len(buf.getvalue()) - 200)
+        z.writestr("OEBPS/chapter1.xhtml", f"<html><body>{padding.decode('latin-1')}</body></html>")
+    return buf.getvalue()
+
+
 def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_path):
     driver = _FakeDriver()
     wait_calls = []
@@ -73,7 +99,7 @@ def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_pa
         if len(wait_calls) == 1:
             return None
         result_path = download_dir / "book.epub"
-        result_path.write_bytes(b"downloaded")
+        result_path.write_bytes(_make_valid_epub_bytes())
         return result_path
 
     monkeypatch.setattr(download_with_libgen, "_wait_for_download", fake_wait_for_download)
@@ -415,7 +441,7 @@ async def test_slow_partner_sanitizes_download_filename(monkeypatch, tmp_path):
     monkeypatch.setattr(download_with_annas_archive.settings, "download_dir", str(tmp_path))
 
     async def fake_trawl(_md5, slow_url):
-        return b"book-data", "../../evil.epub"
+        return _make_valid_epub_bytes(), "../../evil.epub"
 
     monkeypatch.setattr(download_with_annas_archive, "_download_via_trawl_browser", fake_trawl)
 
@@ -424,7 +450,7 @@ async def test_slow_partner_sanitizes_download_filename(monkeypatch, tmp_path):
     )
 
     assert path == tmp_path / "aa-deadbeef" / "evil.epub"
-    assert path.read_bytes() == b"book-data"
+    assert len(path.read_bytes()) > 50_000  # valid EPUB
     assert not (tmp_path / "evil.epub").exists()
 
 
@@ -476,7 +502,7 @@ async def test_slow_partner_emits_status_per_attempt(monkeypatch, tmp_path):
     async def fake_trawl(_md5, slow_url):
         if slow_url.endswith(("one", "two")):
             raise download_with_annas_archive.AnnaPartnerError("trawl_aa_no_d3_link")
-        return b"book-data", "book.epub"
+        return _make_valid_epub_bytes(), "book.epub"
 
     def on_status(status, **details):
         emits.append((status, details))
@@ -1128,12 +1154,15 @@ def test_google_results_drop_unrelated_isbn_matches():
 
 
 @pytest.mark.asyncio
-async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
+async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch, tmp_path):
     statuses = []
     sent_paths = []
 
+    epub_path = tmp_path / "hebrew-book.epub"
+    epub_path.write_bytes(_make_valid_epub_bytes())
+
     async def fake_download(_md5: str, isbns=None, on_status=None) -> Path:
-        return Path("/tmp/hebrew-book.epub")
+        return epub_path
 
     def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
         sent_paths.append(book_path)
@@ -1148,7 +1177,7 @@ async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch):
     )
 
     assert statuses == ["downloading", "sending", "done"]
-    assert sent_paths == [Path("/tmp/hebrew-book.epub")]
+    assert sent_paths == [epub_path]
 
 
 @pytest.mark.asyncio

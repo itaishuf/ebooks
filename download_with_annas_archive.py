@@ -255,6 +255,8 @@ async def _download_via_slow_partners(md5: str, slow_urls: list[str], on_status=
             _emit_status(on_status, "downloading", source="annas_archive", attempt=index, total=len(candidates))
             logger.info(f"Anna partner decision md5={md5} partner_attempt={index}/{len(candidates)}")
             content, filename = await _download_via_trawl_browser(md5, slow_url)
+            from download_flow import _validate_book_file
+            _validate_book_file(content, "trawl")
             safe_name = Path(filename).name if filename else md5
             if not safe_name.lower().endswith(_EBOK_EXTS):
                 safe_name += _ebook_extension(content)
@@ -301,11 +303,12 @@ async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = No
             logger.warning(
                 f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, continuing anyway (different edition)"
             )
-        logger.info(
-            f"Anna MD5 decision isbn_validation={'matched' if page_isbns and any(
+        isbn_match_str = (
+            'matched' if page_isbns and any(
                 any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
-            ) else 'unavailable' if not page_isbns else 'different_edition'} md5={md5}"
+            ) else 'unavailable' if not page_isbns else 'different_edition'
         )
+        logger.info(f"Anna MD5 decision isbn_validation={isbn_match_str} md5={md5}")
 
     try:
         ia_path = await _try_internet_archive(md5, html)

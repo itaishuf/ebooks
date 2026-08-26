@@ -227,11 +227,24 @@ def download_book_using_selenium(url: str) -> Path:
             book_path = _wait_for_download(download_dir, attempt_started_at, url, page_attempt + 1)
             if book_path:
                 time.sleep(DOWNLOAD_POLL_INTERVAL_SECONDS)
-                logger.info(
-                    f"Selenium download completed for {url}: {book_path} "
-                    f"(session_download_dir={download_dir})"
-                )
-                return book_path
+                # Validate the downloaded file before declaring success.
+                # LibGen sometimes serves stubs/error pages as .epub.
+                try:
+                    from download_flow import _validate_book_file
+                    _validate_book_file(book_path.read_bytes(), "libgen")
+                except Exception as exc:
+                    logger.warning(
+                        f"LibGen download validation failed for {url} on page attempt "
+                        f"{page_attempt + 1}: {exc.__class__.__name__}: {exc}"
+                    )
+                    book_path.unlink(missing_ok=True)
+                    # Fall through to retry click or give up
+                else:
+                    logger.info(
+                        f"Selenium download completed for {url}: {book_path} "
+                        f"(session_download_dir={download_dir})"
+                    )
+                    return book_path
 
             logger.warning(
                 f"No completed download artifact detected for {url} after page attempt "

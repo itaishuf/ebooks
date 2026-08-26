@@ -47,6 +47,49 @@ _GOOGLE_COVER_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _GOOGLE_CACHE_MAX_ENTRIES = 64
 _GOOGLE_BREAKER = {"consecutive_failures": 0, "open_until": 0.0}
 _STRUCTURED_GOOGLE_QUERIES = ("isbn:", "intitle:", "inauthor:")
+_MIN_BOOK_BYTES = 50_000  # 50KB — real books are never smaller
+
+
+def _validate_book_file(data: bytes, source: str = "") -> None:
+    """Reject downloaded content that isn't a real ebook.
+
+    Raises DownloadError with a descriptive reason when the content is
+    clearly a server stub, error page, or corrupt file.  Call this at
+    every download-completion point so invalid artifacts trigger the
+    next provider/mirror instead of being emailed to Kindle.
+    """
+    if len(data) < _MIN_BOOK_BYTES:
+        raise DownloadError(
+            f"Downloaded file too small ({len(data)} bytes < {_MIN_BOOK_BYTES}): "
+            f"likely a server stub or error page"
+        )
+
+    # EPUB: PK zip with mimetype entry containing 'epub'
+    if data[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                if "mimetype" in z.namelist():
+                    mt = z.read("mimetype").strip().lower()
+                    if b"epub" in mt:
+                        return  # valid EPUB
+                    raise DownloadError(
+                        f"ZIP mimetype is not EPUB: {mt!r}"
+                    )
+                raise DownloadError("ZIP missing mimetype entry")
+        except (zipfile.BadZipFile, KeyError, OSError) as e:
+            raise DownloadError(f"Invalid ZIP/EPUB: {e.__class__.__name__}") from e
+
+    # PDF
+    if data[:5] == b"%PDF-":
+        return  # valid PDF
+
+    # MOBI/AZW: starts with MOBI, BOOK, TEXt, or REAd header
+    if data[:4] in (b"MOBI", b"BOOK", b"TEXt", b"REAd"):
+        return  # likely MOBI/AZW
+
+    raise DownloadError(
+        f"Unknown file format (magic: {data[:8]!r}); not EPUB, PDF, or MOBI"
+    )
 
 
 class GoogleBooksProviderError(RuntimeError):
@@ -1193,6 +1236,8 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
                 _emit("downloading")
             _emit("downloading", source="annas_archive", attempt=attempt + 1)
             book_path = await download_book_from_annas_archive(md5, isbns=None, on_status=_emit)
+            assert book_path is not None  # guaranteed by successful return
+            _validate_book_file(book_path.read_bytes(), "annas_archive")
             break
         except DownloadError:
             logger.warning(f"Anna direct download failed attempt={attempt + 1}/2 md5={md5}")
