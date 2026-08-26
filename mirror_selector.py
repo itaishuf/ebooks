@@ -58,11 +58,17 @@ _MIN_USEFUL_HTML_BYTES = 5000
 
 
 def _looks_like_challenge(html: str) -> bool:
+    """True when *html* is a challenge/parked/adware shell, not a real page.
+
+    Primary signal is SIZE: real AA search/record pages are tens of KB and
+    legitimately embed 'ddos-guard' client-script references (21-48x on
+    genuine pages), so marker matching must only apply to small responses
+    where a marker distinguishes the shell kind.
+    """
+    if len(html) >= _MIN_USEFUL_HTML_BYTES:
+        return False
     lowered = html.lower()
-    return (
-        len(html) < _MIN_USEFUL_HTML_BYTES
-        or any(marker in lowered for marker in _CHALLENGE_MARKERS)
-    )
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS) or len(html) > 0
 
 
 _mirror_state: dict[str, dict[str, float]] = {}
