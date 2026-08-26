@@ -74,7 +74,7 @@ def test_fetch_aa_html_falls_over_on_failure(monkeypatch):
         history = ()
 
         async def text(self):
-            return "<html>ok</html>"
+            return "<html>" + ("ok " * 2000) + "</html>"  # > min useful size
 
         async def __aenter__(self):
             return self
@@ -194,6 +194,51 @@ def test_challenge_page_counts_as_failure_not_success(monkeypatch):
     state = mirror_selector._mirror_state["https://annas-archive.gs"]
     assert state["failures"] == 1, "challenge page must demote the mirror"
     assert state["successes"] == 0, "challenge page must never count as success"
+
+
+# The actual shell annas-archive.gs served on 2026-08-26: HTTP 200, ~1159
+# bytes, "Antibot solution" click-redirect to an adware domain.
+ADWARE_SHELL_HTML = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+    "<title>Loading...</title></head><body>"
+    '<div class="b">Click for continue....</div>'
+    '<div class="s">Antibot solution</div>'
+    "<script>var d=[\"aHR0cHM6\",\"Ly9idWxz\",\"aXMubmV0\"];"
+    "setTimeout(function(){location.href=atob(d.join(''))},1500);</script>"
+    "</body></html>"
+)
+
+
+def test_adware_shell_mirror_counts_as_failure(monkeypatch):
+    factory = _FakeResponseFactory({
+        "https://annas-archive.gs/search?q=x": ADWARE_SHELL_HTML,
+    })
+    monkeypatch.setattr(mirror_selector.settings, "annas_archive_mirrors", [
+        "https://annas-archive.gs",
+    ])
+    mirror_selector.reset_mirror_state_for_tests()
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    asyncio.run(mirror_selector.fetch_aa_html("/search?q=x"))
+
+    state = mirror_selector._mirror_state["https://annas-archive.gs"]
+    assert state["failures"] == 1 and state["successes"] == 0
+
+
+def test_tiny_page_fails_even_without_known_markers(monkeypatch):
+    tiny = "<html><body>weird new protection x</body></html>"  # < 5000 bytes
+    factory = _FakeResponseFactory({
+        "https://m1.test/search?q=x": tiny,
+    })
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    html = asyncio.run(mirror_selector.fetch_aa_html("/search?q=x"))
+    assert len(factory.calls) >= 1
+    state = mirror_selector._mirror_state["https://m1.test"]
+    assert state["successes"] == 0
+    del html
 
 
 def test_all_plain_mirrors_challenged_falls_back_to_trawl_search(monkeypatch):

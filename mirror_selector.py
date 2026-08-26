@@ -36,19 +36,33 @@ class AnnasArchiveUnreachableError(DownloadError):
     """Every configured mirror failed for this request."""
 
 
-# DDoS-Guard serves a tiny JS-challenge page with HTTP 200. Counting it as a
-# success poisoned the mirror scores; treat these markers as failures instead.
+# DDoS-Guard serves a tiny JS-challenge page with HTTP 200; hijacked/parked
+# mirrors (.gs, 2026-08-26) serve a similar tiny "Antibot solution" click
+# shell redirecting to adware. All count as failures — they were poisoning
+# mirror scores as successes. Belt-and-braces: every genuinely useful AA
+# page (search results, md5 record) is tens of KB, so anything smaller than
+# _MIN_USEFUL_HTML_BYTES is a challenge/parked shell by definition.
 _CHALLENGE_MARKERS = (
     "ddos-guard",
     "checking your browser",
     "js-challenge",
     "forsale.min.js",  # parked domain
+    "antibot solution",
+    "click for continue",
+    "loading...</title>",
+    "just a moment",  # cloudflare
+    "attention required",
+    "one more step",
 )
+_MIN_USEFUL_HTML_BYTES = 5000
 
 
 def _looks_like_challenge(html: str) -> bool:
     lowered = html.lower()
-    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
+    return (
+        len(html) < _MIN_USEFUL_HTML_BYTES
+        or any(marker in lowered for marker in _CHALLENGE_MARKERS)
+    )
 
 
 _mirror_state: dict[str, dict[str, float]] = {}
