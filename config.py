@@ -41,12 +41,10 @@ class Settings(BaseSettings):
 
     # Anna's Archive mirrors (search only, no paid API)
     annas_archive_mirrors: list[str] = [
-        "https://annas-archive.org",
-        "https://annas-archive.se",
-        "https://annas-archive.gs",
-        "https://annas-archive.li",
+        # Verified live + genuine 2026-08-26. Removed: .mx (redirects into
+        # annas-archive.is scam clone serving result-less shells), .li
+        # (parked), .gs (adware click shell), .org/.se/.vg (dead DNS).
         "https://annas-archive.gl",
-        "https://annas-archive.vg",
         "https://annas-archive.pk",
         "https://annas-archive.gd",
     ]
