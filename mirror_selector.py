@@ -175,7 +175,9 @@ async def _fetch_aa_search_via_trawl(query: str) -> str:
     if is_trawl_down():
         raise AnnasArchiveUnreachableError("trawl_breaker_open")
 
-    timeout = aiohttp.ClientTimeout(total=120)
+    # Worst case: trawl rotates through several mirrors × ~30s DDG wait each.
+    # 120s timed out mid-rotation on 2026-08-26; give it headroom.
+    timeout = aiohttp.ClientTimeout(total=180)
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
             f"{settings.trawl_url}/aa/search", json={"query": query}
