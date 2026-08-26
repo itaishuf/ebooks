@@ -334,7 +334,13 @@ async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = No
             logger.info(f"Anna MD5 decision source=internet_archive outcome=success md5={md5}")
             return ia_path
 
-        slow_urls = _get_slow_download_urls(md5, html)
+        try:
+            slow_urls = _get_slow_download_urls(md5, html)
+        except AnnaPartnerError:
+            # Page reachable but no partner links — construct URL directly.
+            mirror = current_annas_archive_url()
+            slow_urls = [f"{mirror}/slow_download/{md5}/0/0"]
+            logger.info(f"Anna MD5 decision md5={md5} source=no_partner_links_fallback mirror={mirror}")
     else:
         # MD5 page unreachable — construct slow_download URL directly.
         # The URL format is deterministic: /slow_download/{md5}/0/0
