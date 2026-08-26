@@ -84,6 +84,62 @@ def _make_valid_epub_bytes(min_bytes: int = 60_000) -> bytes:
     return buf.getvalue()
 
 
+# -- _validate_book_file ----------------------------------------------------
+
+def test_validate_book_file_accepts_valid_epub():
+    download_flow._validate_book_file(_make_valid_epub_bytes(), "test")
+
+
+def test_validate_book_file_accepts_valid_pdf():
+    # Minimal PDF exceeding size threshold
+    pdf = b"%PDF-1.4\n" + b"\x00" * 60_000
+    download_flow._validate_book_file(pdf, "test")
+
+
+def test_validate_book_file_accepts_valid_mobi():
+    mobi = b"MOBI" + b"\x00" * 60_000
+    download_flow._validate_book_file(mobi, "test")
+
+
+def test_validate_book_file_rejects_too_small():
+    with pytest.raises(DownloadError, match="too small"):
+        download_flow._validate_book_file(b"PK\x03\x04" + b"\x00" * 100, "test")
+
+
+def test_validate_book_file_rejects_html_stub():
+    html = b"<html><body>Error: file not found</body></html>" + b"\x00" * 60_000
+    with pytest.raises(DownloadError, match="Unknown file format"):
+        download_flow._validate_book_file(html, "test")
+
+
+def test_validate_book_file_rejects_zip_without_mimetype():
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("dummy.txt", "x" * 60_000)
+    with pytest.raises(DownloadError, match="missing mimetype"):
+        download_flow._validate_book_file(buf.getvalue(), "test")
+
+
+def test_validate_book_file_rejects_zip_with_wrong_mimetype():
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("mimetype", "application/pdf")
+        z.writestr("content.bin", "x" * 60_000)
+    with pytest.raises(DownloadError, match="not EPUB"):
+        download_flow._validate_book_file(buf.getvalue(), "test")
+
+
+def test_validate_book_file_rejects_corrupt_zip():
+    data = b"PK\x03\x04" + b"\x00" * 60_000  # PK header but not a real zip
+    with pytest.raises(DownloadError, match="Invalid ZIP"):
+        download_flow._validate_book_file(data, "test")
+
+
+# -- Selenium download ------------------------------------------------------
+
+
 def test_download_book_using_selenium_retries_until_new_file(monkeypatch, tmp_path):
     driver = _FakeDriver()
     wait_calls = []
