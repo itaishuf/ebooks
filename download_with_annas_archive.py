@@ -292,35 +292,58 @@ async def download_book_from_annas_archive(md5: str, isbns: set[str] | None = No
     4. Fall back to trawl's /aa/download endpoint (patchright + headless
        Chromium) which clears DDoS-Guard on the slow-download page and returns
        the book bytes — the only verified automated path for AA downloads.
+
+    When the MD5 page itself is unreachable (all mirrors return 403/DDG
+    challenge), constructs the slow_download URL directly from the md5
+    (deterministic format) and proceeds to step 4 — skipping IA and ISBN
+    validation, but still attempting the download.
     """
-    html = await _fetch_md5_page(md5)
+    from mirror_selector import current_annas_archive_url
 
-    if isbns:
-        page_isbns = _page_isbns(html)
-        if page_isbns and not any(
-            any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
-        ):
-            logger.warning(
-                f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, continuing anyway (different edition)"
-            )
-        isbn_match_str = (
-            'matched' if page_isbns and any(
-                any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
-            ) else 'unavailable' if not page_isbns else 'different_edition'
-        )
-        logger.info(f"Anna MD5 decision isbn_validation={isbn_match_str} md5={md5}")
-
+    html: str | None = None
     try:
-        ia_path = await _try_internet_archive(md5, html)
-    except DownloadError:
-        ia_path = None
-        logger.warning(f"Anna MD5 decision source=internet_archive outcome=failed md5={md5} next=slow_partner")
-    if ia_path:
-        logger.info(f"Anna MD5 decision source=internet_archive outcome=success md5={md5}")
-        return ia_path
+        html = await _fetch_md5_page(md5)
+    except Exception as exc:
+        logger.warning(
+            f"Anna MD5 page fetch failed for {md5} ({exc.__class__.__name__}); "
+            f"constructing slow_download URL directly"
+        )
 
-    logger.info(f"Anna MD5 decision source=slow_partner reason=internet_archive_unavailable md5={md5}")
-    file_path = await _download_via_slow_partners(md5, _get_slow_download_urls(md5, html), on_status=on_status)
+    if html:
+        if isbns:
+            page_isbns = _page_isbns(html)
+            if page_isbns and not any(
+                any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
+            ):
+                logger.warning(
+                    f"AA MD5 page for {md5} has ISBNs {page_isbns} — none match {sorted(isbns)}, continuing anyway (different edition)"
+                )
+            isbn_match_str = (
+                'matched' if page_isbns and any(
+                    any(isbn in p or p in isbn for isbn in isbns) for p in page_isbns
+                ) else 'unavailable' if not page_isbns else 'different_edition'
+            )
+            logger.info(f"Anna MD5 decision isbn_validation={isbn_match_str} md5={md5}")
+
+        try:
+            ia_path = await _try_internet_archive(md5, html)
+        except DownloadError:
+            ia_path = None
+            logger.warning(f"Anna MD5 decision source=internet_archive outcome=failed md5={md5} next=slow_partner")
+        if ia_path:
+            logger.info(f"Anna MD5 decision source=internet_archive outcome=success md5={md5}")
+            return ia_path
+
+        slow_urls = _get_slow_download_urls(md5, html)
+    else:
+        # MD5 page unreachable — construct slow_download URL directly.
+        # The URL format is deterministic: /slow_download/{md5}/0/0
+        mirror = current_annas_archive_url()
+        slow_urls = [f"{mirror}/slow_download/{md5}/0/0"]
+        logger.info(f"Anna MD5 decision md5={md5} source=constructed_url mirror={mirror}")
+
+    logger.info(f"Anna MD5 decision source=slow_partner reason={'md5_page_unreachable' if not html else 'internet_archive_unavailable'} md5={md5}")
+    file_path = await _download_via_slow_partners(md5, slow_urls, on_status=on_status)
     size_kb = round(file_path.stat().st_size / 1000, 1)
     logger.info(f"Anna MD5 decision source=proxy outcome=success size_kb={size_kb}")
     return file_path
