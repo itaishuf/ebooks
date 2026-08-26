@@ -105,6 +105,134 @@ def test_fetch_aa_html_falls_over_on_failure(monkeypatch):
     assert mirror_selector._mirror_state["https://m1.test"]["failures"] == 1
 
 
+class _FakeResponseFactory:
+    """Builds fake aiohttp responses carrying arbitrary HTML."""
+
+    def __init__(self, html_by_mirror):
+        self.html_by_mirror = html_by_mirror
+        self.calls = []
+        self.post_calls = []
+
+    def response(self, mirror):
+        outer = self
+
+        class _Resp:
+            status = 200
+            request_info = None
+            history = ()
+
+            async def text(self):
+                return outer.html_by_mirror.get(mirror, "<html></html>")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Resp()
+
+    def session(self):
+        outer = self
+
+        class _Sess:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            def get(self, url, **kwargs):
+                outer.calls.append(url)
+                if url not in outer.html_by_mirror:
+                    raise TimeoutError("boom")
+                return outer.response(url)
+
+            def post(self, url, json=None, **kwargs):
+                outer.post_calls.append((url, json))
+                long_html = "<html>" + ("trawl-results-html " * 400) + "</html>"
+
+                class _PostResp:
+                    status = 200
+
+                    async def json(self, content_type=None):
+                        return {"html": long_html, "mirror": "https://via.trawl"}
+
+                    async def __aenter__(self):
+                        return self
+
+                    async def __aexit__(self, *exc):
+                        return False
+
+                return _PostResp()
+
+        return _Sess
+
+
+CHALLENGE_HTML = (
+    '<html><head><title>Checking your browser before accessing</title></head>'
+    '<body>ddos-guard js-challenge protection</body></html>'
+)
+
+
+def test_challenge_page_counts_as_failure_not_success(monkeypatch):
+    factory = _FakeResponseFactory({
+        "https://annas-archive.gs/search?q=x": CHALLENGE_HTML,
+    })
+    monkeypatch.setattr(mirror_selector.settings, "annas_archive_mirrors", [
+        "https://annas-archive.gs",
+    ])
+    mirror_selector.reset_mirror_state_for_tests()
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    asyncio.run(mirror_selector.fetch_aa_html("/search?q=x"))
+
+    state = mirror_selector._mirror_state["https://annas-archive.gs"]
+    assert state["failures"] == 1, "challenge page must demote the mirror"
+    assert state["successes"] == 0, "challenge page must never count as success"
+
+
+def test_all_plain_mirrors_challenged_falls_back_to_trawl_search(monkeypatch):
+    factory = _FakeResponseFactory({
+        "https://m1.test/search?q=tolkien": CHALLENGE_HTML,
+    })
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    html = asyncio.run(mirror_selector.fetch_aa_html("/search?q=tolkien"))
+    assert "trawl-results-html" in html, "must fall back to trawl /aa/search"
+    assert len(factory.post_calls) == 1
+    post_url, post_json = factory.post_calls[0]
+    assert post_url.endswith("/aa/search")
+    assert post_json == {"query": "tolkien"}
+
+
+def test_non_search_path_never_hits_trawl(monkeypatch):
+    factory = _FakeResponseFactory({})  # everything fails
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    with pytest.raises(mirror_selector.AnnasArchiveUnreachableError):
+        asyncio.run(mirror_selector.fetch_aa_html("/md5/deadbeef"))
+    assert factory.post_calls == [], "md5 pages must not go through trawl search"
+
+
+def test_trawl_breaker_open_blocks_fallback(monkeypatch):
+    factory = _FakeResponseFactory({})
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+    trawl_breaker.record_trawl_failure("timeout")
+    trawl_breaker.record_trawl_failure("timeout")  # opens the breaker
+
+    import asyncio
+    with pytest.raises(mirror_selector.AnnasArchiveUnreachableError):
+        asyncio.run(mirror_selector.fetch_aa_html("/search?q=x"))
+    assert factory.post_calls == []
+
+
 # -- trawl breaker -----------------------------------------------------------
 
 @pytest.fixture(autouse=True)

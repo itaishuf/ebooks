@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import aiohttp
 
@@ -33,6 +34,21 @@ _MIRROR_MAX_ATTEMPTS = 3
 
 class AnnasArchiveUnreachableError(DownloadError):
     """Every configured mirror failed for this request."""
+
+
+# DDoS-Guard serves a tiny JS-challenge page with HTTP 200. Counting it as a
+# success poisoned the mirror scores; treat these markers as failures instead.
+_CHALLENGE_MARKERS = (
+    "ddos-guard",
+    "checking your browser",
+    "js-challenge",
+    "forsale.min.js",  # parked domain
+)
+
+
+def _looks_like_challenge(html: str) -> bool:
+    lowered = html.lower()
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS)
 
 
 _mirror_state: dict[str, dict[str, float]] = {}
@@ -125,12 +141,65 @@ def current_annas_archive_url() -> str:
     return _eligible()[0]
 
 
+def _extract_search_query(path: str) -> str:
+    """Return the ``q`` parameter when *path* is an AA /search URL, else ''."""
+    parts = urlsplit(path)
+    if parts.path != "/search":
+        return ""
+    return (parse_qs(parts.query).get("q") or [""])[0]
+
+
+async def _fetch_aa_search_via_trawl(query: str) -> str:
+    """Fetch AA search results through trawl's browser-backed /aa/search.
+
+    Trawl runs patchright+Chromium, clears the DDoS-Guard JS challenge on the
+    mirror itself, and returns the rendered results HTML. Uses the same
+    circuit breaker as the slow_download path.
+    """
+    from trawl_breaker import ensure_probe_running, is_trawl_down, record_trawl_failure, record_trawl_success
+
+    if is_trawl_down():
+        raise AnnasArchiveUnreachableError("trawl_breaker_open")
+
+    timeout = aiohttp.ClientTimeout(total=120)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+            f"{settings.trawl_url}/aa/search", json={"query": query}
+        ) as response:
+            body = await response.json(content_type=None)
+            if response.status >= 400:
+                code = body.get("error", f"http_{response.status}") if isinstance(body, dict) else "bad_body"
+                raise RuntimeError(str(code))
+    except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+        record_trawl_failure("transport_failure")
+        ensure_probe_running()
+        raise AnnasArchiveUnreachableError(f"trawl /aa/search failed: {exc.__class__.__name__}") from exc
+    except Exception as exc:
+        record_trawl_failure("aa_error")
+        ensure_probe_running()
+        raise AnnasArchiveUnreachableError(f"trawl /aa/search failed: {exc}") from exc
+
+    html = body.get("html") if isinstance(body, dict) else None
+    if not html or len(html) < 5000 or _looks_like_challenge(html):
+        record_trawl_failure("empty_or_challenged")
+        ensure_probe_running()
+        raise AnnasArchiveUnreachableError("trawl /aa/search returned no usable results HTML")
+
+    record_trawl_success()
+    logger.info(f"AA mirror decision mirror={body.get('mirror')} path=/search?q={query!r} outcome=ok_via_trawl bytes={len(html)}")
+    return html
+
+
 async def fetch_aa_html(path: str, *, timeout: aiohttp.ClientTimeout | None = None) -> str:
     """Fetch an AA page from the best mirror, demoting mirrors on failure.
 
-    Tries up to ``_MIRROR_MAX_ATTEMPTS`` distinct mirrors. Returns the page
-    HTML. Raises :class:`AnnasArchiveUnreachableError` when every attempt
-    fails — callers translate that into their own error taxonomy.
+    Tries up to ``_MIRROR_MAX_ATTEMPTS`` distinct mirrors. A DDoS-Guard
+    challenge page (HTTP 200 but tiny JS-challenge HTML) counts as a failure,
+    never as a success. When every plain-HTTP attempt fails and the request
+    is a ``/search`` page, falls back to trawl's browser-backed
+    ``POST /aa/search`` — the only path that reliably clears AA protection.
+    Raises :class:`AnnasArchiveUnreachableError` when everything fails —
+    callers translate that into their own error taxonomy.
     """
     _load_state()
     last_error: Exception | None = None
@@ -156,6 +225,14 @@ async def fetch_aa_html(path: str, *, timeout: aiohttp.ClientTimeout | None = No
                         message=f"http_{response.status}",
                     )
                 html = await response.text()
+            if _looks_like_challenge(html):
+                # 200 + challenge shell: demote, keep rotating.
+                raise aiohttp.ClientResponseError(
+                    response.request_info,
+                    response.history,
+                    status=503,
+                    message="ddos_guard_challenge_page",
+                )
             record_mirror_success(mirror)
             logger.info(f"AA mirror decision mirror={mirror} path={path} outcome=ok bytes={len(html)}")
             return html
@@ -165,4 +242,10 @@ async def fetch_aa_html(path: str, *, timeout: aiohttp.ClientTimeout | None = No
             logger.warning(
                 f"AA mirror decision mirror={mirror} path={path} outcome=fail type={exc.__class__.__name__}"
             )
+
+    query = _extract_search_query(path)
+    if query:
+        logger.warning(f"AA mirror decision path={path} outcome=all_plain_mirrors_failed fallback=trawl_aa_search")
+        return await _fetch_aa_search_via_trawl(query)
+
     raise AnnasArchiveUnreachableError(f"All Anna's Archive mirrors failed for {path}") from last_error
