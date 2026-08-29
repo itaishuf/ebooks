@@ -20,6 +20,12 @@ def _fresh_selector(monkeypatch, tmp_path):
     monkeypatch.setattr(mirror_selector.settings, "annas_archive_mirrors", [
         "https://m1.test", "https://m2.test", "https://m3.test",
     ])
+    # Prevent a real (network-enabled) open-slum fetch from leaking live
+    # mirrors into _slum_mirrors and shadowing the mocked config list.
+    monkeypatch.setattr(mirror_selector, "_slum_mirrors", [])
+    async def _noop_refresh():  # neutralize the live refresh inside fetch_aa_html
+        return
+    monkeypatch.setattr(mirror_selector, "refresh_slum_mirrors", _noop_refresh)
     mirror_selector.reset_mirror_state_for_tests()
     yield
     mirror_selector.reset_mirror_state_for_tests()
@@ -40,6 +46,17 @@ def test_success_restores_priority():
     assert mirror_selector.current_annas_archive_url() == "https://m1.test"
 
 
+def test_openslum_is_authoritative_over_config_fallback(monkeypatch):
+    # When open-slum has produced a list, the harder-curated config mirrors
+    # must NOT be candidates even if they'd sort first.
+    monkeypatch.setattr(mirror_selector, "_slum_mirrors", [
+        "https://slum-a.test", "https://slum-b.test",
+    ])
+    assert mirror_selector.current_annas_archive_url() == "https://slum-a.test"
+    monkeypatch.setattr(mirror_selector, "_slum_mirrors", [])
+    assert mirror_selector.current_annas_archive_url() == "https://m1.test"
+
+
 def test_cooldown_expires(monkeypatch):
     mirror_selector.record_mirror_failure("https://m1.test")
     mirror_selector.record_mirror_failure("https://m1.test")  # opens cooldown
@@ -51,18 +68,21 @@ def test_cooldown_expires(monkeypatch):
     assert mirror_selector.current_annas_archive_url() in mirror_selector.settings.annas_archive_mirrors
 
 
-def test_state_persists_and_reload_skips_unknown_urls(tmp_path, monkeypatch):
+def test_state_persists_and_unknown_url_never_eligible(tmp_path, monkeypatch):
     mirror_selector.record_mirror_failure("https://m1.test")
     raw = json.loads((tmp_path / "mirror_state.json").read_text())
     assert "https://m1.test" in raw
-    # Unknown URLs in a corrupt file are dropped on load
+    # A garbled/corrupt entry tolerates being in the state file on load...
     (tmp_path / "mirror_state.json").write_text(json.dumps({
         "https://evil.test": {"successes": 0, "failures": 99, "cooldown_until": 9e12},
+        "https://m1.test": {"successes": 0, "failures": 1, "cooldown_until": 0.0},
     }))
     globals_reset = mirror_selector.reset_mirror_state_for_tests()
     mirror_selector._state_loaded = False
     mirror_selector._load_state()
-    assert "https://evil.test" not in mirror_selector._mirror_state
+    assert "https://evil.test" in mirror_selector._mirror_state
+    # ...but it can never be selected: eligibility is limited to the pool.
+    assert mirror_selector.current_annas_archive_url() != "https://evil.test"
 
 
 def test_fetch_aa_html_falls_over_on_failure(monkeypatch):
@@ -74,7 +94,8 @@ def test_fetch_aa_html_falls_over_on_failure(monkeypatch):
         history = ()
 
         async def text(self):
-            return "<html>" + ("ok " * 2000) + "</html>"  # > min useful size
+            # Real-looking md5 page (has a partner link, > min useful size)
+            return "<html><a href='/slow_download/x'>dl</a>" + ("ok " * 2000) + "</html>"
 
         async def __aenter__(self):
             return self
@@ -224,6 +245,30 @@ def test_adware_shell_mirror_counts_as_failure(monkeypatch):
 
     state = mirror_selector._mirror_state["https://annas-archive.gs"]
     assert state["failures"] == 1 and state["successes"] == 0
+
+
+def test_stub_md5_page_demotes_mirror_and_rotates(monkeypatch):
+    # A >5KB md5 record with no IA/partner links is a stub: it passes the
+    # size gate but must be demoted so the selector tries a real mirror.
+    stub = "<html>" + (("x " * 3000)) + "</html>"  # ~6000 bytes, no usable links
+    good = "<html><body><a href='https://archive.org/details/foo'>IA</a>"
+    good += ("y " * 3000) + "</body></html>"  # >5KB so it passes the size gate
+    factory = _FakeResponseFactory({
+        "https://aaa-stub.test/md5/deadbeef": stub,
+        "https://zzz-good.test/md5/deadbeef": good,
+    })
+    monkeypatch.setattr(mirror_selector.settings, "annas_archive_mirrors", [
+        "https://aaa-stub.test", "https://zzz-good.test",
+    ])
+    mirror_selector.reset_mirror_state_for_tests()
+    monkeypatch.setattr(mirror_selector.aiohttp, "ClientSession", factory.session())
+
+    import asyncio
+    html = asyncio.run(mirror_selector.fetch_aa_html("/md5/deadbeef"))
+    assert "archive.org/details" in html, "must rotate to the real mirror"
+    assert mirror_selector._mirror_state["https://aaa-stub.test"]["failures"] == 1
+    assert mirror_selector._mirror_state["https://aaa-stub.test"]["successes"] == 0
+    assert mirror_selector._mirror_state["https://zzz-good.test"]["successes"] == 1
 
 
 def test_tiny_page_fails_even_without_known_markers(monkeypatch):

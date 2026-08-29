@@ -39,11 +39,14 @@ class Settings(BaseSettings):
     require_verified_email: bool = True
 
 
-    # Anna's Archive mirrors (search only, no paid API)
+    # Anna's Archive mirrors — EMERGENCY FALLBACK ONLY. open-slum.org is the
+    # authoritative source of AA domains (see mirror_selector._pool_urls). This
+    # hand-curated list is used only when open-slum has not yet produced a
+    # list (cold boot / open-slum outage). Verified live + genuine 2026-08-26.
+    # Removed: .mx (redirects into annas-archive.is scam clone serving
+    # result-less shells), .li (parked), .gs (adware click shell),
+    # .org/.se/.vg (dead DNS).
     annas_archive_mirrors: list[str] = [
-        # Verified live + genuine 2026-08-26. Removed: .mx (redirects into
-        # annas-archive.is scam clone serving result-less shells), .li
-        # (parked), .gs (adware click shell), .org/.se/.vg (dead DNS).
         "https://annas-archive.gl",
         "https://annas-archive.pk",
         "https://annas-archive.gd",

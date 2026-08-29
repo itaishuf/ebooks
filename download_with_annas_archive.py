@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from config import settings
 from exceptions import DownloadError
-from mirror_selector import fetch_aa_html
+from mirror_selector import current_annas_archive_url, fetch_aa_html
 from trawl_breaker import ensure_probe_running, is_trawl_down, record_trawl_failure, record_trawl_success
 from utils import log_call
 
@@ -108,7 +108,7 @@ def _get_slow_download_urls(md5: str, html: str) -> list[str]:
     urls = []
     for link in soup.find_all("a", href=re.compile(r"/slow_download/")):
         href = link["href"]
-        url = href if href.startswith("http") else f"{settings.annas_archive_url}{href}"
+        url = href if href.startswith("http") else f"{current_annas_archive_url()}{href}"
         if url not in urls:
             urls.append(url)
     if not urls:

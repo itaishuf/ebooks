@@ -23,7 +23,13 @@ async def bootstrap_annas_archive_url() -> AnnasArchiveBootstrapResult:
     per-request selection handles health. This keeps a settings URL populated
     for legacy checks and logs what the selector will try first.
     """
-    from mirror_selector import current_annas_archive_url
+    from mirror_selector import current_annas_archive_url, refresh_slum_mirrors
+
+    # Warm the open-slum.org mirror pool before first selection. Identical to
+    # the per-request refresh in fetch_aa_html, but guarantees sync callers
+    # (Selenium search, slow-download URL construction) see openslum's live
+    # AA domains instead of the hardcoded emergency fallback on first use.
+    await refresh_slum_mirrors()
 
     selected = current_annas_archive_url()
     settings.annas_archive_url = selected

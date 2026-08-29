@@ -86,6 +86,21 @@ def _looks_like_challenge(html: str) -> bool:
     return any(marker in lowered for marker in _CHALLENGE_MARKERS) or len(html) > 0
 
 
+def _md5_page_is_stub(path: str, html: str) -> bool:
+    """True when an AA ``/md5/`` record page carries no downloadable content.
+
+    A genuine record links either to Internet Archive (``archive.org/details``)
+    or to a partner (``/slow_download/``). A mirror that returns a page with
+    neither is serving a truncated/stub record (2026-08-27 observation:
+    ``software.annas-archive.gl`` returns a ~12.5KB page with no usable links
+    that still passes the size gate). Treat such a page as a mirror failure so
+    the selector rotates to a mirror that actually serves the book.
+    """
+    if not path.startswith("/md5/"):
+        return False
+    return "archive.org/details" not in html and "/slow_download/" not in html
+
+
 _mirror_state: dict[str, dict[str, float]] = {}
 _state_loaded = False
 
@@ -100,8 +115,7 @@ def _load_state() -> None:
         if isinstance(raw, dict):
             for url, entry in raw.items():
                 if (
-                    url in settings.annas_archive_mirrors
-                    and isinstance(entry, dict)
+                    isinstance(entry, dict)
                     and {"successes", "failures", "cooldown_until"} <= set(entry)
                 ):
                     _mirror_state[url] = {
@@ -157,16 +171,24 @@ def reset_mirror_state_for_tests() -> None:
     globals()["_state_loaded"] = True
 
 
+def _pool_urls() -> list[str]:
+    """The candidate AA mirrors for selection, openslum-authoritative.
+
+    open-slum.org is the single source of truth for Anna's Archive domains.
+    The hardcoded ``settings.annas_archive_mirrors`` (hand-curated, prone to
+    going stale) is used ONLY as an emergency fallback when open-slum has not
+    yet produced a list (cold boot / open-slum outage). Never merge the two:
+    openslum's live list wins outright so dead manual entries can't poison
+    the pool.
+    """
+    if _slum_mirrors:
+        return list(_slum_mirrors)
+    return list(settings.annas_archive_mirrors)
+
+
 def _eligible(now: float | None = None) -> list[str]:
     now = now if now is not None else time.monotonic()
-    # Merge hardcoded config with any open-slum.org mirrors (async fetch
-    # cached for 5 min). Open-slum mirrors that aren't in the config get
-    # added; config mirrors that open-slum dropped stay (our health scoring
-    # handles demotion).
-    all_mirrors = list(settings.annas_archive_mirrors)
-    for url in _slum_mirrors:
-        if url not in all_mirrors:
-            all_mirrors.append(url)
+    all_mirrors = _pool_urls()
     eligible = [
         url
         for url in all_mirrors
@@ -278,6 +300,14 @@ async def fetch_aa_html(path: str, *, timeout: aiohttp.ClientTimeout | None = No
                     response.history,
                     status=503,
                     message="ddos_guard_challenge_page",
+                )
+            if _md5_page_is_stub(path, html):
+                # 200 + record with no IA/partner links: truncated stub, demote.
+                raise aiohttp.ClientResponseError(
+                    response.request_info,
+                    response.history,
+                    status=503,
+                    message="stub_md5_page",
                 )
             record_mirror_success(mirror)
             logger.info(f"AA mirror decision mirror={mirror} path={path} outcome=ok bytes={len(html)}")

@@ -8,6 +8,11 @@ Only mirrors with status ``PROTECTED`` or ``UP`` and HTTP 200 are returned.
 ``PROTECTED`` mirrors (behind DDoS-Guard/Cloudflare) are preferred — they
 tend to serve real content more reliably than bare ``UP`` mirrors which
 sometimes return nginx stubs or parked pages.
+
+open-slum.org is occasionally slow on cold requests (15s+ observed on
+2026-08-27), so the fetch timeout is generous (``_SLUM_FETCH_TIMEOUT``).
+``get_mirrors`` always returns the last-known-good list on failure so a
+transient open-slum outage never collapses the mirror pool to empty.
 """
 
 from __future__ import annotations
@@ -21,7 +26,8 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-_CACHE_TTL_SECONDS = 300  # 5 minutes
+_CACHE_TTL_SECONDS = 600  # 10 minutes
+_SLUM_FETCH_TIMEOUT = 40  # seconds; open-slum is slow on cold hits
 
 _SLUM_PAGES = {
     "annas": "https://open-slum.org/annas.html",
@@ -84,7 +90,7 @@ async def get_mirrors(library: str) -> list[str]:
 
     try:
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=10),
+            timeout=aiohttp.ClientTimeout(total=_SLUM_FETCH_TIMEOUT),
             headers={"User-Agent": "Mozilla/5.0"},
         ) as session, session.get(page_url) as response:
             if response.status != 200:

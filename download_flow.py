@@ -1209,6 +1209,7 @@ async def ebook_download_by_md5(md5: str, kindle_mail: str, on_status=None) -> N
     book_path = await _download_via_libgen(md5, [md5], require_confirmation=False)
 
     logger.info("Download decision source=libgen_md5 file=ready next=kindle_delivery")
+    _validate_book_file(book_path, "libgen_md5")
     _emit("sending")
     await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
 
@@ -1242,6 +1243,7 @@ async def ebook_download_from_annas_md5(md5: str, kindle_mail: str, on_status=No
             raise DownloadError(f"Anna direct download failed for md5={md5}") from exc
 
     logger.info("Download decision source=annas_archive file=ready next=kindle_delivery")
+    _validate_book_file(book_path, "annas_archive")
     _emit("sending")
     await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
 
@@ -1425,6 +1427,7 @@ async def ebook_download_from_metadata(
         raise DownloadError(f"All download attempts failed for {identifier}") from last_error
 
     logger.info(f"Download decision file=ready format={book_path.suffix.lower()} next=kindle_delivery")
+    _validate_book_file(book_path, "ebook_download_from_metadata")
     _emit("sending")
     await asyncio.to_thread(send_to_kindle, kindle_mail, book_path)
 

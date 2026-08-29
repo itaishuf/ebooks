@@ -340,16 +340,18 @@ async def test_run_job_terminates_stalled_stage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(monkeypatch):
+async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(monkeypatch, tmp_path):
     service.jobs.clear()
     job_id = service._make_job()
     statuses = []
     sent_books = []
+    final_pdf = tmp_path / "final.pdf"
+    final_pdf.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n" + b"\x00" * 1000)
     downloaded_paths = [ManualDownloadRequiredError(
         "Automatic download failed because Selenium never detected a new downloaded file.",
         fallback_url="https://libgen.test/get.php?md5=epub",
         fallback_message="Try downloading the file manually from LibGen.",
-    ), Path("/tmp/final.pdf")]
+    ), final_pdf]
 
     async def fake_get_book_info(_url):
         return {"isbn": "isbn-123", "title": "Test Book", "author": "Test Author"}
@@ -387,7 +389,7 @@ async def test_ebook_download_recovers_from_epub_failure_without_fallback_leak(m
     assert service.jobs[job_id]["status"] == "done"
     assert service.jobs[job_id]["fallback"] is None
     assert statuses == ["fetching_isbn", "searching", "downloading", "sending", "done"]
-    assert sent_books == [Path("/tmp/final.pdf")]
+    assert sent_books == [final_pdf]
 
 
 @pytest.mark.asyncio
@@ -1228,8 +1230,10 @@ async def test_ebook_download_from_annas_md5_sends_downloaded_file(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
+async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch, tmp_path):
     sent_paths = []
+    libgen_book = tmp_path / "libgen-book.epub"
+    libgen_book.write_bytes(_make_valid_epub_bytes())
 
     async def fake_aa_download(_md5: str, isbns=None, on_status=None) -> Path:
         raise DownloadError("Anna CDN unavailable")
@@ -1237,7 +1241,7 @@ async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
     async def fake_libgen_download(isbns: set[str], md5_list: list[str], **kwargs) -> Path:
         assert "0123456789abcdef0123456789abcdef" in isbns
         assert md5_list == ["0123456789abcdef0123456789abcdef"]
-        return Path("/tmp/libgen-book.epub")
+        return libgen_book
 
     def fake_send(_email: str, book_path: Path | None = None, **_kwargs):
         sent_paths.append(book_path)
@@ -1255,7 +1259,7 @@ async def test_ebook_download_from_annas_md5_falls_back_to_libgen(monkeypatch):
         "reader@example.com",
     )
 
-    assert sent_paths == [Path("/tmp/libgen-book.epub")]
+    assert sent_paths == [libgen_book]
 
 
 @pytest.mark.asyncio

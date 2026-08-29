@@ -85,9 +85,11 @@ async def test_aa_isbn_mismatch_does_not_reject_different_edition(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_file_type_fallback_to_pdf(monkeypatch):
+async def test_file_type_fallback_to_pdf(monkeypatch, tmp_path):
     """ebook_download falls back to pdf when no epub results are available."""
     statuses = []
+    fallback_pdf = tmp_path / "fallback.pdf"
+    fallback_pdf.write_bytes(b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n" + b"\x00" * 1000)
 
     async def fake_get_book_info(_url: str) -> dict[str, str]:
         return {"isbn": "9780141439600", "title": "Test Book", "author": "Test Author"}
@@ -96,7 +98,7 @@ async def test_file_type_fallback_to_pdf(monkeypatch):
         return {"epub": [], "pdf": ["pdf-md5"], "mobi": []}
 
     async def fake_download_via_libgen(_isbn: str, _md5_list: list[str], **kwargs) -> Path:
-        return Path("/tmp/fallback.pdf")
+        return fallback_pdf
 
     def fake_send_to_kindle(_email: str, book_path: Path | None = None, book_data: bytes = b"", filename: str = ""):
         return None
